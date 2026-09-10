@@ -1,0 +1,238 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   THEME TOKENS
+   Applied via [data-theme] on <html>. Default is dark (set in themeStore.ts).
+───────────────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme="dark"] {
+  /* backgrounds */
+  --bg:         #0f172a;
+  --bg-deep:    #060d1a;
+  --surface:    #1e293b;
+  --surface-2:  #0d1525;
+  --overlay:    rgba(255,255,255,0.04);
+
+  /* text */
+  --foreground: #f1f5f9;
+  --foreground-2: #cbd5e1;
+  --muted:      #64748b;
+  --placeholder: #475569;
+
+  /* borders */
+  --border:     #334155;
+  --border-2:   rgba(255,255,255,0.08);
+
+  /* accents */
+  --primary:        #3b82f6;
+  --primary-bg:     rgba(37,99,235,0.15);
+  --primary-border: rgba(37,99,235,0.35);
+  --primary-text:   #93c5fd;
+  --cyan:           rgba(6,182,212,0.9);
+  --cyan-glow:      rgba(6,182,212,0.15);
+
+  /* semantic */
+  --danger-bg:      rgba(127,29,29,0.4);
+  --danger-border:  rgba(185,28,28,0.5);
+  --danger-text:    #fca5a5;
+  --success-bg:     rgba(5,46,22,0.7);
+  --success-border: rgba(21,128,61,0.5);
+  --success-text:   #86efac;
+  --warning-bg:     rgba(120,53,15,0.3);
+  --warning-border: rgba(180,83,9,0.4);
+  --warning-text:   #fcd34d;
+
+  /* inputs */
+  --input-bg:     rgba(255,255,255,0.04);
+  --input-border: rgba(255,255,255,0.1);
+  --input-focus:  rgba(6,182,212,0.6);
+
+  /* focus ring */
+  --ring: #3b82f6;
+
+  /* scrollbar */
+  --scrollbar-thumb: #334155;
+
+  /* chart / misc */
+  --chart-1: #3b82f6;
+  --chart-2: #8b5cf6;
+  --chart-3: #06b6d4;
+}
+
+[data-theme="light"] {
+  /* backgrounds */
+  --bg:         #f8fafc;
+  --bg-deep:    #f1f5f9;
+  --surface:    #ffffff;
+  --surface-2:  #f1f5f9;
+  --overlay:    rgba(0,0,0,0.03);
+
+  /* text */
+  --foreground:   #0f172a;
+  --foreground-2: #334155;
+  --muted:        #64748b;
+  --placeholder:  #94a3b8;
+
+  /* borders */
+  --border:   #e2e8f0;
+  --border-2: rgba(0,0,0,0.06);
+
+  /* accents */
+  --primary:        #2563eb;
+  --primary-bg:     rgba(37,99,235,0.08);
+  --primary-border: rgba(37,99,235,0.25);
+  --primary-text:   #1d4ed8;
+  --cyan:           #0891b2;
+  --cyan-glow:      rgba(8,145,178,0.1);
+
+  /* semantic */
+  --danger-bg:      rgba(254,242,242,1);
+  --danger-border:  rgba(252,165,165,0.8);
+  --danger-text:    #b91c1c;
+  --success-bg:     rgba(240,253,244,1);
+  --success-border: rgba(134,239,172,0.8);
+  --success-text:   #15803d;
+  --warning-bg:     rgba(255,251,235,1);
+  --warning-border: rgba(253,230,138,0.8);
+  --warning-text:   #92400e;
+
+  /* inputs */
+  --input-bg:     #ffffff;
+  --input-border: #cbd5e1;
+  --input-focus:  #2563eb;
+
+  /* focus ring */
+  --ring: #2563eb;
+
+  /* scrollbar */
+  --scrollbar-thumb: #cbd5e1;
+
+  /* chart / misc */
+  --chart-1: #2563eb;
+  --chart-2: #7c3aed;
+  --chart-3: #0891b2;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   BASE STYLES — consume variables so the theme actually applies
+───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark light;
+}
+
+html {
+  background-color: var(--bg);
+  color: var(--foreground);
+  transition: background-color 0.2s, color 0.2s;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 9999px; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   TAILWIND BRIDGE OVERRIDES
+   The existing components use Tailwind dark:* classes like bg-dark-bg,
+   bg-dark-card, etc. We map those classes to CSS variables so they
+   automatically respond to theme switching.
+───────────────────────────────────────────────────────────────────────────── */
+
+/* bg-dark-bg → var(--bg) */
+.bg-dark-bg    { background-color: var(--bg) !important; }
+/* bg-dark-card → var(--surface) */
+.bg-dark-card  { background-color: var(--surface) !important; }
+/* border-dark-border → var(--border) */
+.border-dark-border { border-color: var(--border) !important; }
+/* text on dark-bg */
+.text-slate-100 { color: var(--foreground) !important; }
+.text-slate-200 { color: var(--foreground-2) !important; }
+.text-slate-300 { color: var(--foreground-2) !important; }
+.text-slate-400 { color: var(--muted) !important; }
+.text-slate-500 { color: var(--muted) !important; }
+
+/* Cards */
+[data-theme="light"] .rounded-2xl,
+[data-theme="light"] .rounded-xl {
+  background-color: var(--surface);
+  color: var(--foreground);
+}
+
+/* Inputs */
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background-color: var(--input-bg);
+  border-color: var(--input-border);
+  color: var(--foreground);
+}
+
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: var(--placeholder);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   UTILITY CLASSES — used by themed components
+───────────────────────────────────────────────────────────────────────────── */
+
+.theme-bg       { background-color: var(--bg); }
+.theme-surface  { background-color: var(--surface); }
+.theme-surface2 { background-color: var(--surface-2); }
+.theme-text     { color: var(--foreground); }
+.theme-muted    { color: var(--muted); }
+.theme-border   { border-color: var(--border); }
+
+.theme-input {
+  background-color: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--foreground);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.15s;
+}
+.theme-input::placeholder { color: var(--placeholder); }
+.theme-input:focus { border-color: var(--input-focus); }
+
+.theme-card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+}
+
+.theme-badge-primary {
+  background-color: var(--primary-bg);
+  border: 1px solid var(--primary-border);
+  color: var(--primary-text);
+}
+
+.theme-error {
+  background-color: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+}
+
+/* Proctoring status animations */
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pulse-red { animation: pulse-red 1s ease-in-out infinite; }

@@ -1,0 +1,10 @@
+# Lightweight requirements for demo/development mode
+# Use requirements-full.txt for real AI model support
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+numpy==1.26.4
+Pillow==10.3.0
+opencv-python-headless==4.9.0.80

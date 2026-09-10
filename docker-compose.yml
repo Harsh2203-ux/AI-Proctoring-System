@@ -1,0 +1,79 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: proctoring_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proctoring_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-proctoring_db}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      - AI_SERVICE_URL=http://ai-service:8001
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - EVIDENCE_STORAGE_PATH=/app/evidence
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-10}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@demo.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-Admin@1234}
+      - STUDENT_EMAIL=${STUDENT_EMAIL:-student@demo.com}
+      - STUDENT_PASSWORD=${STUDENT_PASSWORD:-Student@1234}
+    volumes:
+      - evidence_data:/app/evidence
+    depends_on:
+      mongo:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+
+  ai-service:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    container_name: proctoring_ai
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-base}
+      - YOLO_MODEL_PATH=${YOLO_MODEL_PATH:-}
+      - PYANNOTE_AUTH_TOKEN=${PYANNOTE_AUTH_TOKEN:-}
+    volumes:
+      - ai_models:/app/models
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: proctoring_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:
+  evidence_data:
+  ai_models:
