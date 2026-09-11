@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { query, queryOne } from '../../db/client';
+import { ensureDb } from '../../db/init';
 import { hashPassword, validatePassword } from '../../_lib/password';
 import crypto from 'crypto';
 
@@ -31,6 +32,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (pwErr) return res.status(400).json({ detail: pwErr });
 
   try {
+    await ensureDb();
     const existing = await queryOne<{ id: string }>(
       'SELECT id FROM users WHERE email = $1', [email.toLowerCase()]
     );

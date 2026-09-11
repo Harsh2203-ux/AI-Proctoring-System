@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { queryOne } from '../db/client';
+import { ensureDb } from '../db/init';
 import { verifyPassword } from '../_lib/password';
 import { createAccessToken, createRefreshToken } from '../_lib/auth';
 
@@ -12,6 +13,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    await ensureDb();
     const user = await queryOne<{
       id: string; email: string; password_hash: string; role: string; is_active: boolean;
     }>(

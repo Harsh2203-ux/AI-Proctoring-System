@@ -84,8 +84,18 @@ export const LoginPage: React.FC = () => {
       toast.success(`Welcome back, ${user.full_name}!`);
       navigate(user.role === 'admin' ? '/admin/dashboard' : '/student/dashboard');
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Login failed. Please check your credentials.';
-      setError(msg);
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      if (status === 401 || status === 403) {
+        setError(detail || 'Invalid email or password.');
+      } else if (status === 500) {
+        setError('A server error occurred. Please try again in a moment.');
+        console.error('[login] Server error:', detail);
+      } else if (!err.response) {
+        setError('Unable to reach the server. Please check your connection.');
+      } else {
+        setError(detail || 'Login failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }

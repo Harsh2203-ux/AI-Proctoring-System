@@ -276,7 +276,16 @@ export const RegisterPage: React.FC = () => {
       setStep('success');
       toast.success('Student account created! You can now sign in.');
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Registration failed. Please try again.');
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      if (status === 500) {
+        setError('A server error occurred. Please try again in a moment.');
+        console.error('[student-register] Server error:', detail);
+      } else if (!err.response) {
+        setError('Unable to reach the server. Please check your connection.');
+      } else {
+        setError(detail || 'Registration failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -299,7 +308,16 @@ export const RegisterPage: React.FC = () => {
       setStep('success');
       toast.success('Administrator account created! You can now sign in.');
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Registration failed. Please try again.');
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      if (status === 500) {
+        setError('A server error occurred. Please try again in a moment.');
+        console.error('[admin-register] Server error:', detail);
+      } else if (!err.response) {
+        setError('Unable to reach the server. Please check your connection.');
+      } else {
+        setError(detail || 'Registration failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }

@@ -1,4 +1,10 @@
-import { Pool } from '@neondatabase/serverless';
+import { Pool, neonConfig } from '@neondatabase/serverless';
+import ws from 'ws';
+
+// Neon's serverless driver requires a WebSocket constructor when running in
+// Node.js (Vercel serverless functions).  The browser environment provides
+// WebSocket natively; Node.js does not — so we polyfill it here.
+neonConfig.webSocketConstructor = ws;
 
 // A module-level pool that is reused across invocations within the same
 // Node.js process (Vercel's function warm instances share memory).
