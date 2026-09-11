@@ -253,8 +253,10 @@ export const RegisterPage: React.FC = () => {
   const [aAdminId, setAAdminId] = useState('');
   const [aPass, setAPass] = useState('');
   const [aConfirm, setAConfirm] = useState('');
+  const [aRegCode, setARegCode] = useState('');
   const [showAPass, setShowAPass] = useState(false);
   const [showAConfirm, setShowAConfirm] = useState(false);
+  const [showARegCode, setShowARegCode] = useState(false);
 
   const clearError = () => setError('');
 
@@ -284,14 +286,16 @@ export const RegisterPage: React.FC = () => {
     e.preventDefault();
     clearError();
     if (aPass !== aConfirm) { setError('Passwords do not match'); return; }
+    if (!aRegCode.trim()) { setError('Administrator Registration Code is required'); return; }
     setLoading(true);
     try {
       await api.post('/api/auth/register/admin', {
         full_name: aName, email: aEmail, admin_id: aAdminId,
         password: aPass, confirm_password: aConfirm,
+        registration_code: aRegCode,
       });
       // Clear sensitive fields immediately on success
-      setAPass(''); setAConfirm('');
+      setAPass(''); setAConfirm(''); setARegCode('');
       setStep('success');
       toast.success('Administrator account created! You can now sign in.');
     } catch (err: any) {
@@ -574,6 +578,20 @@ export const RegisterPage: React.FC = () => {
           onToggle={() => setShowAConfirm((v) => !v)}
           placeholder="Re-enter password"
           autoComplete="new-password"
+        />
+        <Field
+          id="admin-registration-code"
+          name="registrationCode"
+          label="Administrator Registration Code"
+          value={aRegCode}
+          onChange={setARegCode}
+          required
+          showToggle
+          show={showARegCode}
+          onToggle={() => setShowARegCode((v) => !v)}
+          placeholder="Enter the administrator registration code"
+          hint="Provided by your system administrator — required to create admin accounts"
+          autoComplete="off"
         />
 
         <div className="pt-1">

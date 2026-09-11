@@ -125,8 +125,8 @@ export const ExamsPage: React.FC = () => {
                 <tr><td colSpan={5} className="text-center py-8 text-slate-500">Unable to load exams. Check the error above and retry.</td></tr>
               ) : exams.length === 0 ? (
                 <tr><td colSpan={5} className="text-center py-8 text-slate-400">No exams yet. Create your first exam above.</td></tr>
-              ) : exams.map(exam => (
-                <tr key={exam._id} className="hover:bg-slate-800/20">
+              ) : exams.map((exam: any) => (
+                <tr key={exam.id || exam._id} className="hover:bg-slate-800/20">
                   <td className="px-4 py-3">
                     <div className="text-slate-100 font-medium">{exam.title}</div>
                     <div className="text-slate-500 text-xs">{exam.description?.slice(0, 60)}</div>
@@ -158,7 +158,7 @@ export const ExamsPage: React.FC = () => {
                             Publish
                           </button>
                           <button
-                            onClick={() => deleteExam(exam._id)}
+                            onClick={() => deleteExam(exam.id || exam._id)}
                             className="p-1.5 text-slate-400 hover:text-red-400 rounded"
                             title="Delete"
                           >

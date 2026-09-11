@@ -45,12 +45,16 @@ class StudentRegisterRequest(BaseModel):
 
 
 class AdminRegisterRequest(BaseModel):
-    """Registration payload for an admin account."""
+    """Registration payload for an admin account.
+    
+    registration_code must match ADMIN_REGISTRATION_CODE env var — validated server-side.
+    """
     full_name: str
     email: EmailStr
     admin_id: str
     password: str
     confirm_password: str
+    registration_code: str
 
 
 class UserCreate(UserBase):

@@ -2,6 +2,7 @@
 Integration tests for authentication, registration, and authorization.
 Requires running backend (http://localhost:8000) and MongoDB.
 """
+import os
 import sys
 import json
 import urllib.request
@@ -97,8 +98,8 @@ status, data = req("POST", "/api/auth/register/student", {
 check("HTTP 409/422/400", status in (409, 422, 400), str(status))
 check("Error mentions student_id", "student" in str(data).lower() or "already" in str(data).lower(), str(data))
 
-# ── T6: New admin registration ─────────────────────────────────────────────────
-print("\nT6  New admin registration")
+# ── T6: Invalid admin registration code ───────────────────────────────────────
+print("\nT6a  Admin registration rejected with wrong code")
 ts2 = str(int(time.time() * 1000))[-6:]
 status, data = req("POST", "/api/auth/register/admin", {
     "full_name": f"Test Admin {ts2}",
@@ -106,9 +107,28 @@ status, data = req("POST", "/api/auth/register/admin", {
     "admin_id": f"ADM-TEST-{ts2}",
     "password": "Admin@1234",
     "confirm_password": "Admin@1234",
+    "registration_code": "wrongcode",
 })
-check("HTTP 201", status == 201, str(status))
-check("Has user_id", "user_id" in data, str(data))
+check("HTTP 403", status == 403, str(status))
+check("Error mentions registration code", "registration code" in str(data).lower(), str(data))
+
+# ── T6b: New admin registration with correct code ─────────────────────────────
+print("\nT6b  New admin registration with valid code")
+ADMIN_CODE = os.environ.get("ADMIN_REGISTRATION_CODE", "")
+if not ADMIN_CODE:
+    print("  ⚠  ADMIN_REGISTRATION_CODE not set in environment — skipping T6b")
+else:
+    ts2b = str(int(time.time() * 1000))[-5:]
+    status, data = req("POST", "/api/auth/register/admin", {
+        "full_name": f"Test Admin {ts2b}",
+        "email": f"testadmin{ts2b}@test.com",
+        "admin_id": f"ADM-TST-{ts2b}",
+        "password": "Admin@1234",
+        "confirm_password": "Admin@1234",
+        "registration_code": ADMIN_CODE,
+    })
+    check("HTTP 201", status == 201, str(status))
+    check("Has user_id", "user_id" in data, str(data))
 
 # ── T7: Password mismatch ──────────────────────────────────────────────────────
 print("\nT7  Password mismatch rejected")

@@ -1,13 +1,36 @@
+# Environment secrets — never commit
 .env
 .env.*
 !.env.example
+!frontend/.env.example
 
+# Dependencies
 node_modules/
+frontend/node_modules/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+backend/venv/
+
+# Build output
 dist/
 build/
+frontend/dist/
+.vercel/
 
+# OS
 .DS_Store
+Thumbs.db
+
+# Evidence files (generated at runtime)
+backend/evidence/**/screenshots/
+backend/evidence/**/audio/
+backend/evidence/enrollments/
+backend/evidence/reports/
+
+# TypeScript build info
+*.tsbuildinfo

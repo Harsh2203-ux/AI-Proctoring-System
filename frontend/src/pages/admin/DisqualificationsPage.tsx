@@ -57,8 +57,8 @@ export const DisqualificationsPage: React.FC = () => {
                 <tr><td colSpan={5} className="text-center py-8 text-slate-500">Unable to load. Retry above.</td></tr>
               ) : disqs.length === 0 ? (
                 <tr><td colSpan={5} className="text-center py-8 text-slate-400">No disqualifications yet.</td></tr>
-              ) : disqs.map(d => (
-                <tr key={d._id} className="hover:bg-slate-800/20">
+              ) : disqs.map((d: any) => (
+                <tr key={d.id || d._id} className="hover:bg-slate-800/20">
                   <td className="px-4 py-3 text-slate-200 text-sm">{d.student_name}</td>
                   <td className="px-4 py-3 text-slate-300 text-sm">{d.exam_title}</td>
                   <td className="px-4 py-3 text-slate-400 text-sm">{d.reason}</td>

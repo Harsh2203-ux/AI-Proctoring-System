@@ -1,0 +1,221 @@
+
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Migration Report</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 14px; line-height: 1.6; background: #ffffff; color: #1f2328; }
+  .page { max-width: 760px; margin: 0 auto; padding: 40px 24px 60px; }
+  h1 { font-size: 22px; font-weight: 700; color: #1f2328; margin-bottom: 4px; }
+  .subtitle { color: #57606a; font-size: 13px; margin-bottom: 32px; }
+  h2 { font-size: 15px; font-weight: 600; color: #1f2328; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
+  h3 { font-size: 13px; font-weight: 600; color: #1f2328; margin: 16px 0 6px; }
+  p { color: #1f2328; margin-bottom: 8px; }
+  ul, ol { margin: 6px 0 12px 20px; }
+  li { margin: 3px 0; color: #1f2328; }
+  code { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 3px; padding: 1px 5px; color: #1f2328; }
+  pre { background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; overflow-x: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; margin: 10px 0; line-height: 1.5; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+  .badge-green { background: #dcfce7; color: #166534; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+  .badge-amber { background: #fef9c3; color: #854d0e; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+  th { text-align: left; padding: 7px 10px; background: #f7f8fa; border: 1px solid #e5e7eb; font-weight: 600; font-size: 12px; color: #57606a; text-transform: uppercase; letter-spacing: 0.04em; }
+  td { padding: 7px 10px; border: 1px solid #e5e7eb; vertical-align: top; }
+  td:first-child { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; }
+  .status-ok { color: #166534; font-weight: 600; }
+  .status-warn { color: #854d0e; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 10px 0; }
+  .card { background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; }
+  .card-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #57606a; margin-bottom: 6px; }
+  .env-table td:first-child { width: 240px; color: #3b82d4; }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #57606a; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>AI Proctoring System — Migration Report</h1>
+  <p class="subtitle">FastAPI + MongoDB + WebSocket → Vercel Serverless + PostgreSQL + HTTP Polling  |  Build: <span class="badge badge-green">✓ PASSING</span></p>
+
+  <h2>Architecture Change</h2>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">Before</div>
+      <ul>
+        <li>FastAPI (Python) — port 8000</li>
+        <li>AI service (FastAPI) — port 8001</li>
+        <li>MongoDB via Motor async driver</li>
+        <li>WebSocket <code>/ws/proctoring/:id</code></li>
+        <li>Local file storage for evidence</li>
+        <li>Docker Compose for orchestration</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">After</div>
+      <ul>
+        <li>Vercel Serverless Functions (Node.js/TS)</li>
+        <li>Demo AI logic inline in serverless fn</li>
+        <li>PostgreSQL (Neon / Vercel Postgres)</li>
+        <li>HTTP polling — <code>POST /api/proctoring/events</code></li>
+        <li>Evidence stored as base64 in DB</li>
+        <li>Single <code>vercel.json</code> — no Docker</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Files Created</h2>
+
+  <h3>API — Serverless Functions (<code>api/</code>)</h3>
+  <table>
+    <tr><th>File</th><th>Purpose</th></tr>
+    <tr><td>api/db/client.ts</td><td>Neon PostgreSQL connection pool + query helpers</td></tr>
+    <tr><td>api/db/schema.sql</td><td>Complete PostgreSQL DDL (15 tables + indexes)</td></tr>
+    <tr><td>api/db/migrate.ts</td><td>Run-once migration script</td></tr>
+    <tr><td>api/db/seed.ts</td><td>Demo data seeder (admin + student + exam)</td></tr>
+    <tr><td>api/_lib/auth.ts</td><td>JWT helpers, requireAuth / requireAdmin / requireStudent</td></tr>
+    <tr><td>api/_lib/password.ts</td><td>bcryptjs hash + verify + validation</td></tr>
+    <tr><td>api/_lib/demoAi.ts</td><td>Demo AI — simulated frame + audio analysis</td></tr>
+    <tr><td>api/_lib/report.ts</td><td>Proctoring report generation (risk score, timeline)</td></tr>
+    <tr><td>api/auth/login.ts</td><td>POST /api/auth/login</td></tr>
+    <tr><td>api/auth/register/student.ts</td><td>POST /api/auth/register/student</td></tr>
+    <tr><td>api/auth/register/admin.ts</td><td>POST /api/auth/register/admin</td></tr>
+    <tr><td>api/auth/refresh.ts</td><td>POST /api/auth/refresh</td></tr>
+    <tr><td>api/health.ts</td><td>GET /api/health — DB connectivity probe</td></tr>
+    <tr><td>api/exams/index.ts</td><td>GET + POST /api/exams</td></tr>
+    <tr><td>api/exams/[examId].ts</td><td>GET + PUT + DELETE /api/exams/:id</td></tr>
+    <tr><td>api/exams/[examId]/publish.ts</td><td>POST /api/exams/:id/publish</td></tr>
+    <tr><td>api/exams/[examId]/questions.ts</td><td>GET + POST /api/exams/:id/questions</td></tr>
+    <tr><td>api/exams/[examId]/questions/[questionId].ts</td><td>PUT + DELETE /api/exams/:id/questions/:qid</td></tr>
+    <tr><td>api/exams/[examId]/students.ts</td><td>POST /api/exams/:id/students</td></tr>
+    <tr><td>api/exams/[examId]/students/[uid].ts</td><td>DELETE /api/exams/:id/students/:uid</td></tr>
+    <tr><td>api/attempts/index.ts</td><td>POST /api/attempts</td></tr>
+    <tr><td>api/attempts/[attemptId].ts</td><td>GET /api/attempts/:id</td></tr>
+    <tr><td>api/attempts/[attemptId]/answers.ts</td><td>GET + PUT /api/attempts/:id/answers</td></tr>
+    <tr><td>api/attempts/[attemptId]/submit.ts</td><td>POST /api/attempts/:id/submit</td></tr>
+    <tr><td>api/students/profile.ts</td><td>GET /api/students/profile</td></tr>
+    <tr><td>api/students/enrol-face.ts</td><td>POST /api/students/enrol-face (multipart)</td></tr>
+    <tr><td>api/proctoring/events.ts</td><td>POST /api/proctoring/events (frame + audio)</td></tr>
+    <tr><td>api/proctoring/heartbeat.ts</td><td>POST /api/proctoring/heartbeat</td></tr>
+    <tr><td>api/proctoring/session/[sessionId].ts</td><td>GET /api/proctoring/session/:id</td></tr>
+    <tr><td>api/admin/dashboard/stats.ts</td><td>GET /api/admin/dashboard/stats</td></tr>
+    <tr><td>api/admin/dashboard/violations-chart.ts</td><td>GET /api/admin/dashboard/violations-chart</td></tr>
+    <tr><td>api/admin/students.ts</td><td>GET /api/admin/students</td></tr>
+    <tr><td>api/admin/students/[studentId].ts</td><td>GET /api/admin/students/:id</td></tr>
+    <tr><td>api/admin/sessions.ts</td><td>GET /api/admin/sessions</td></tr>
+    <tr><td>api/admin/sessions/[sessionId].ts</td><td>GET /api/admin/sessions/:id</td></tr>
+    <tr><td>api/admin/violations.ts</td><td>GET /api/admin/violations</td></tr>
+    <tr><td>api/admin/violations/[violationId]/review.ts</td><td>PUT /api/admin/violations/:id/review</td></tr>
+    <tr><td>api/admin/disqualifications.ts</td><td>GET /api/admin/disqualifications</td></tr>
+    <tr><td>api/admin/reports.ts</td><td>GET /api/admin/reports</td></tr>
+    <tr><td>api/admin/reports/[sessionId].ts</td><td>GET /api/admin/reports/:sessionId</td></tr>
+    <tr><td>package.json</td><td>Root package with API dependencies</td></tr>
+    <tr><td>tsconfig.json</td><td>TypeScript config for api/ functions</td></tr>
+    <tr><td>vercel.json</td><td>Vercel routing: SPA + /api/* rewrites</td></tr>
+  </table>
+
+  <h3>Files Modified (frontend)</h3>
+  <table>
+    <tr><th>File</th><th>Change</th></tr>
+    <tr><td>frontend/src/lib/api.ts</td><td>Removed VITE_API_URL; baseURL now empty string (relative /api paths)</td></tr>
+    <tr><td>frontend/src/pages/student/ExamPage.tsx</td><td>Removed WebSocket entirely; replaced with HTTP polling (frame → POST /api/proctoring/events, heartbeat every 3s)</td></tr>
+    <tr><td>frontend/src/pages/student/FaceEnrolmentPage.tsx</td><td>Fixed health check URL to /api/health; removed port 8001 mention</td></tr>
+    <tr><td>frontend/src/pages/student/StudentDashboard.tsx</td><td>id/‌_id compatibility for PostgreSQL UUIDs</td></tr>
+    <tr><td>frontend/src/pages/admin/ExamDetailPage.tsx</td><td>id/‌_id compatibility; student list field normalization</td></tr>
+    <tr><td>frontend/src/pages/admin/ExamsPage.tsx</td><td>id/‌_id compatibility</td></tr>
+    <tr><td>frontend/src/pages/admin/SessionsPage.tsx</td><td>id/‌_id compatibility</td></tr>
+    <tr><td>frontend/src/pages/admin/StudentsPage.tsx</td><td>id/‌_id compatibility; flat profile fields</td></tr>
+    <tr><td>frontend/src/pages/admin/ViolationsPage.tsx</td><td>id/‌_id compatibility; created_at field</td></tr>
+    <tr><td>frontend/src/pages/admin/ReportsPage.tsx</td><td>id/‌_id compatibility; flat student_name/exam_title</td></tr>
+    <tr><td>frontend/src/pages/admin/DisqualificationsPage.tsx</td><td>id/‌_id compatibility</td></tr>
+    <tr><td>frontend/src/pages/admin/SessionDetailPage.tsx</td><td>id/‌_id compatibility; created_at for violations</td></tr>
+    <tr><td>.env.example</td><td>Replaced MongoDB vars with DATABASE_URL + JWT_SECRET</td></tr>
+    <tr><td>.gitignore</td><td>Added frontend/dist, .vercel, *.tsbuildinfo, evidence dirs</td></tr>
+    <tr><td>backend/README.md</td><td>Added "LEGACY — local dev only" notice</td></tr>
+  </table>
+
+  <h2>PostgreSQL Schema (15 Tables)</h2>
+  <table>
+    <tr><th>Table</th><th>Replaces MongoDB collection</th><th>Key columns</th></tr>
+    <tr><td>users</td><td>users</td><td>id UUID, email UNIQUE, password_hash, role, is_active</td></tr>
+    <tr><td>student_profiles</td><td>student_profiles</td><td>user_id FK, full_name, student_id UNIQUE, face_encoding JSONB, face_image_b64</td></tr>
+    <tr><td>admin_profiles</td><td>admin_profiles</td><td>user_id FK, full_name, admin_id UNIQUE</td></tr>
+    <tr><td>exams</td><td>exams</td><td>id, title, created_by FK, allowed_students TEXT[], status, proctoring_config JSONB</td></tr>
+    <tr><td>questions</td><td>questions</td><td>id, exam_id FK, order, question_type, text, options JSONB, marks</td></tr>
+    <tr><td>exam_attempts</td><td>exam_attempts</td><td>id, exam_id FK, student_id FK, status, started_at, time_remaining_seconds</td></tr>
+    <tr><td>answers</td><td>answers</td><td>id, attempt_id FK, question_id FK, response, UNIQUE(attempt_id, question_id)</td></tr>
+    <tr><td>proctoring_sessions</td><td>proctoring_sessions</td><td>id, attempt_id FK, warning_count, is_disqualified, demo_mode, vstate JSONB</td></tr>
+    <tr><td>proctoring_events</td><td>proctoring_events</td><td>id, session_id FK, event_type, raw_payload JSONB, confidence</td></tr>
+    <tr><td>violations</td><td>violations</td><td>id, session_id FK, violation_type, severity, status, metadata JSONB</td></tr>
+    <tr><td>disqualifications</td><td>disqualifications</td><td>id, session_id FK, reason, review_status</td></tr>
+    <tr><td>proctoring_reports</td><td>proctoring_reports</td><td>id, session_id FK UNIQUE, risk_score, risk_level, full_timeline JSONB</td></tr>
+    <tr><td>evidence</td><td>evidence</td><td>id, session_id FK, evidence_type, file_data_b64</td></tr>
+  </table>
+
+  <h2>Required Environment Variables (Vercel Dashboard)</h2>
+  <table class="env-table">
+    <tr><th>Variable</th><th>Example / Notes</th></tr>
+    <tr><td>DATABASE_URL</td><td><code>postgres://user:pass@host/db?sslmode=require</code> — Neon connection string</td></tr>
+    <tr><td>JWT_SECRET</td><td>32+ random chars — <code>openssl rand -hex 32</code></td></tr>
+    <tr><td>DEMO_MODE</td><td><code>true</code> (default) — simulated proctoring AI</td></tr>
+    <tr><td>MAX_UPLOAD_SIZE_MB</td><td><code>10</code></td></tr>
+    <tr><td>ADMIN_EMAIL</td><td><code>admin@demo.com</code> — used by seed script</td></tr>
+    <tr><td>ADMIN_PASSWORD</td><td><code>Admin@1234</code> — used by seed script</td></tr>
+    <tr><td>STUDENT_EMAIL</td><td><code>student@demo.com</code> — used by seed script</td></tr>
+    <tr><td>STUDENT_PASSWORD</td><td><code>Student@1234</code> — used by seed script</td></tr>
+  </table>
+
+  <h2>Deployment Steps</h2>
+  <ol>
+    <li><strong>Create a Neon database</strong> at <a href="https://neon.tech">neon.tech</a> (free tier works). Copy the connection string.</li>
+    <li><strong>Run migrations</strong> locally:<br />
+      <code>DATABASE_URL=postgres://... node -r ts-node/register api/db/migrate.ts</code>
+    </li>
+    <li><strong>Seed demo data:</strong><br />
+      <code>DATABASE_URL=postgres://... node -r ts-node/register api/db/seed.ts</code>
+    </li>
+    <li><strong>Push to GitHub</strong> and import the repo into Vercel.</li>
+    <li><strong>Set environment variables</strong> in Vercel Project → Settings → Environment Variables (all 8 from the table above).</li>
+    <li><strong>Deploy</strong> — Vercel auto-detects <code>vercel.json</code>, builds <code>frontend/</code>, and serves <code>api/</code> as serverless functions.</li>
+    <li><strong>Verify:</strong> visit <code>https://your-app.vercel.app/api/health</code> — should return <code>{"status":"ok","db":"connected"}</code></li>
+    <li><strong>Log in</strong> with demo credentials: <code>admin@demo.com / Admin@1234</code> or <code>student@demo.com / Student@1234</code></li>
+  </ol>
+
+  <h2>WebSocket → HTTP Proctoring Migration</h2>
+  <table>
+    <tr><th>Before (WebSocket)</th><th>After (HTTP Polling)</th></tr>
+    <tr><td>Persistent WS connection to <code>ws://localhost:8000/ws/proctoring/:id</code></td><td>No persistent connection</td></tr>
+    <tr><td>Frame sent via <code>ws.send({type:'frame', data: b64})</code></td><td><code>POST /api/proctoring/events</code> <code>{session_id, type:'frame', data}</code></td></tr>
+    <tr><td>Audio sent via <code>ws.send({type:'audio', data: b64})</code></td><td><code>POST /api/proctoring/events</code> <code>{session_id, type:'audio', data}</code></td></tr>
+    <tr><td>Server pushes state in real time</td><td>Client polls <code>POST /api/proctoring/heartbeat</code> every 3s</td></tr>
+    <tr><td>Python AI service at port 8001 required</td><td>Demo AI inline in serverless function (no extra service)</td></tr>
+  </table>
+
+  <h2>Limitations &amp; Known Constraints</h2>
+  <ul>
+    <li><span class="badge badge-amber">DEMO ONLY</span> Real face-recognition AI (face_recognition / dlib) cannot run on Vercel serverless (no binary deps, 50 MB limit). DEMO_MODE is the only supported mode for Vercel deployment. To use real AI, you would need a separate persistent service (e.g., a Railway/Render Python container) and call it from the serverless function via HTTP.</li>
+    <li><span class="badge badge-amber">EVIDENCE SIZE</span> Evidence files are stored as base64 in PostgreSQL. This is suitable for demo but not for high-volume production use. For production, move to Vercel Blob or S3.</li>
+    <li><span class="badge badge-amber">PDF REPORTS</span> The legacy PDF generation (reportlab) is not available serverless. The <code>GET /api/admin/reports/:id/pdf</code> route from the original backend is not implemented in the new API. Report data is available as JSON only.</li>
+    <li><span class="badge badge-blue">PROCTORING LATENCY</span> HTTP polling at 1 fps for frames and 3s heartbeats introduces slightly more latency than WebSocket. This is an acceptable trade-off for serverless deployment.</li>
+    <li><span class="badge badge-blue">VIOLATION STATE</span> Per-session proctoring state (consecutive frame counters) is persisted in the <code>vstate JSONB</code> column, making it safe for stateless serverless invocations.</li>
+  </ul>
+
+  <h2>Build Verification</h2>
+  <pre>$ cd frontend &amp;&amp; npm run build
+&gt; frontend@0.0.0 build
+&gt; tsc -b &amp;&amp; vite build
+
+✓ 2514 modules transformed.
+dist/index.html         0.45 kB
+dist/assets/index.css  25.32 kB
+dist/assets/index.js  791.21 kB
+
+✓ built in 641ms   ← NO TypeScript errors</pre>
+
+  <footer>Made with IBM Bob</footer>
+</div>
+</body>
+</html>

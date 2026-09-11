@@ -81,13 +81,13 @@ export const StudentsPage: React.FC = () => {
                     No students registered yet.
                   </td>
                 </tr>
-              ) : students.map(s => (
-                <tr key={s._id} className="hover:bg-slate-800/20">
+              ) : students.map((s: any) => (
+                <tr key={s.id || s._id} className="hover:bg-slate-800/20">
                   <td className="px-4 py-3">
-                    <div className="text-slate-100 font-medium">{s.profile?.full_name || '—'}</div>
+                    <div className="text-slate-100 font-medium">{s.profile?.full_name || s.full_name || '—'}</div>
                   </td>
                   <td className="px-4 py-3 text-slate-300 text-sm">{s.email}</td>
-                  <td className="px-4 py-3 text-slate-400 text-sm font-mono">{s.profile?.student_id || '—'}</td>
+                  <td className="px-4 py-3 text-slate-400 text-sm font-mono">{s.profile?.student_id || s.student_id || '—'}</td>
                   <td className="px-4 py-3">
                     {s.profile?.is_face_enrolled
                       ? <span className="flex items-center gap-1 text-green-400 text-xs"><CheckCircle2 className="w-3.5 h-3.5" />Enrolled</span>

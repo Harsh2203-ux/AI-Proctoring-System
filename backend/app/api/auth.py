@@ -1,7 +1,9 @@
 import re
+import secrets as _secrets
 from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel, EmailStr
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
+from app.core.config import settings
 from app.db.connection import get_db
 from app.models.user import UserCreate, UserOut, UserRole, StudentProfile, StudentRegisterRequest, AdminRegisterRequest
 from datetime import datetime
@@ -95,8 +97,16 @@ async def register_student(data: StudentRegisterRequest):
 
 @router.post("/register/admin", status_code=201)
 async def register_admin(data: AdminRegisterRequest):
-    """Register a new admin account."""
+    """Register a new admin account.
+
+    Requires a valid ADMIN_REGISTRATION_CODE to prevent public admin sign-ups.
+    """
     db = get_db()
+
+    # Validate admin registration code FIRST — before any DB lookups
+    expected_code = settings.ADMIN_REGISTRATION_CODE
+    if not expected_code or not _secrets.compare_digest(data.registration_code.strip(), expected_code.strip()):
+        raise HTTPException(status_code=403, detail="Invalid administrator registration code")
 
     # Password validation
     _validate_password(data.password, data.confirm_password)

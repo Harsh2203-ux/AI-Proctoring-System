@@ -84,7 +84,7 @@ export const ExamDetailPage: React.FC = () => {
 
   const assignAllStudents = async () => {
     try {
-      const allIds = allStudents.map((s: any) => s._id);
+      const allIds = allStudents.map((s: any) => s.id || s._id);
       if (allIds.length === 0) { toast.error('No students to assign'); return; }
       await api.post(`/api/exams/${examId}/students`, allIds);
       toast.success(`Assigned ${allIds.length} students`);
@@ -109,8 +109,8 @@ export const ExamDetailPage: React.FC = () => {
 
   const assignedIds: string[] = exam.allowed_students || [];
   const isOpenAccess = assignedIds.length === 0;
-  const unassigned = allStudents.filter(s => !assignedIds.includes(s._id));
-  const assigned = allStudents.filter(s => assignedIds.includes(s._id));
+  const unassigned = allStudents.filter((s: any) => !assignedIds.includes(s.id || s._id));
+  const assigned = allStudents.filter((s: any) => assignedIds.includes(s.id || s._id));
 
   return (
     <AdminLayout>
@@ -172,8 +172,8 @@ export const ExamDetailPage: React.FC = () => {
                 </button>
               </div>
               <div className="divide-y divide-dark-border">
-                {questions.map((q, i) => (
-                  <div key={q._id} className="p-4 flex items-start gap-3">
+                {questions.map((q: any, i) => (
+                   <div key={q.id || q._id} className="p-4 flex items-start gap-3">
                     <span className="text-slate-500 text-sm font-mono w-6 flex-shrink-0">{i + 1}.</span>
                     <div className="flex-1">
                       <p className="text-slate-200 text-sm">{q.text}</p>
@@ -182,7 +182,7 @@ export const ExamDetailPage: React.FC = () => {
                         <span className="text-xs text-slate-500">{q.marks} mark(s)</span>
                       </div>
                     </div>
-                    <button onClick={() => deleteQuestion(q._id)} className="text-slate-500 hover:text-red-400 p-1">
+                    <button onClick={() => deleteQuestion(q.id || q._id)} className="text-slate-500 hover:text-red-400 p-1">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
@@ -224,21 +224,21 @@ export const ExamDetailPage: React.FC = () => {
                     value=""
                   >
                     <option value="">Add student to restrict…</option>
-                    {allStudents.map(s => (
-                      <option key={s._id} value={s._id}>{s.profile?.full_name || s.email}</option>
+                    {allStudents.map((s: any) => (
+                      <option key={s.id || s._id} value={s.id || s._id}>{s.profile?.full_name || s.full_name || s.email}</option>
                     ))}
                   </select>
                 </div>
               ) : (
                 <>
                   <div className="divide-y divide-dark-border max-h-64 overflow-y-auto">
-                    {assigned.map(s => (
-                      <div key={s._id} className="flex items-center justify-between px-4 py-2.5">
-                        <div>
-                          <div className="text-slate-200 text-sm">{s.profile?.full_name || s.email}</div>
-                          <div className="text-slate-500 text-xs">{s.profile?.student_id}</div>
-                        </div>
-                        <button onClick={() => removeStudent(s._id)} className="text-slate-500 hover:text-red-400 p-1">
+                    {assigned.map((s: any) => (
+                        <div key={s.id || s._id} className="flex items-center justify-between px-4 py-2.5">
+                          <div>
+                            <div className="text-slate-200 text-sm">{s.profile?.full_name || s.full_name || s.email}</div>
+                            <div className="text-slate-500 text-xs">{s.profile?.student_id || s.student_id}</div>
+                          </div>
+                          <button onClick={() => removeStudent(s.id || s._id)} className="text-slate-500 hover:text-red-400 p-1">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -253,8 +253,8 @@ export const ExamDetailPage: React.FC = () => {
                         value=""
                       >
                         <option value="">Select student…</option>
-                        {unassigned.map(s => (
-                          <option key={s._id} value={s._id}>{s.profile?.full_name || s.email}</option>
+                        {unassigned.map((s: any) => (
+                           <option key={s.id || s._id} value={s.id || s._id}>{s.profile?.full_name || s.full_name || s.email}</option>
                         ))}
                       </select>
                     </div>

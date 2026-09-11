@@ -100,10 +100,10 @@ export const ReportsPage: React.FC = () => {
                 <tr><td colSpan={8} className="text-center py-8 text-slate-500">Unable to load reports. Check the error above and retry.</td></tr>
               ) : reports.length === 0 ? (
                 <tr><td colSpan={8} className="text-center py-8 text-slate-400">No reports available yet. Reports are generated when students complete exams.</td></tr>
-              ) : reports.map(r => (
-                <tr key={r._id} className="hover:bg-slate-800/20">
-                  <td className="px-4 py-3 text-slate-200 text-sm">{r.student_info?.full_name || r.student_id}</td>
-                  <td className="px-4 py-3 text-slate-300 text-sm">{r.exam_info?.title || '—'}</td>
+              ) : reports.map((r: any) => (
+                <tr key={r.id || r._id} className="hover:bg-slate-800/20">
+                  <td className="px-4 py-3 text-slate-200 text-sm">{r.student_name || r.student_info?.full_name || r.student_id}</td>
+                  <td className="px-4 py-3 text-slate-300 text-sm">{r.exam_title || r.exam_info?.title || '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`font-semibold text-sm ${riskColor(r.risk_level)}`}>
                       {r.risk_score}/100 <span className="text-xs uppercase">({r.risk_level})</span>

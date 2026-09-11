@@ -1,0 +1,22 @@
+{
+  "name": "ai-proctoring-api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "migrate": "ts-node api/db/migrate.ts",
+    "seed": "ts-node api/db/seed.ts"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "@vercel/node": "^5.1.13",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^22.15.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.7.3"
+  }
+}

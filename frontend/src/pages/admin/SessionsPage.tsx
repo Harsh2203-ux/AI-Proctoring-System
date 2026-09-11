@@ -83,8 +83,8 @@ export const SessionsPage: React.FC = () => {
                 <tr><td colSpan={6} className="text-center py-8 text-slate-500">Unable to load sessions. Check the error above and retry.</td></tr>
               ) : sessions.length === 0 ? (
                 <tr><td colSpan={6} className="text-center py-8 text-slate-400">No sessions found. Sessions appear here when students start exams.</td></tr>
-              ) : sessions.map(s => (
-                <tr key={s._id} className="hover:bg-slate-800/20">
+              ) : sessions.map((s: any) => (
+                <tr key={s.id || s._id} className="hover:bg-slate-800/20">
                   <td className="px-4 py-3">
                     <div className="text-slate-100 text-sm font-medium">{s.student_name}</div>
                     <div className="text-slate-500 text-xs">{s.student_student_id}</div>
@@ -106,7 +106,7 @@ export const SessionsPage: React.FC = () => {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <button onClick={() => navigate(`/admin/sessions/${s._id}`)} className="p-1.5 text-slate-400 hover:text-blue-400 rounded">
+                    <button onClick={() => navigate(`/admin/sessions/${s.id || s._id}`)} className="p-1.5 text-slate-400 hover:text-blue-400 rounded">
                       <Eye className="w-4 h-4" />
                     </button>
                   </td>

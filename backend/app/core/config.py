@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     STUDENT_EMAIL: str = "student@demo.com"
     STUDENT_PASSWORD: str = "Student@1234"
 
+    # Admin registration protection — required when creating a new admin account.
+    # Set this to a long random string in production. Never expose in frontend code.
+    # Generate with: python3 -c "import secrets; print(secrets.token_hex(24))"
+    ADMIN_REGISTRATION_CODE: str = "CHANGE-THIS-ADMIN-CODE"
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

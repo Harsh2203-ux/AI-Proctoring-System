@@ -38,7 +38,7 @@ export const ViolationsPage: React.FC = () => {
   const reviewViolation = async (status: string) => {
     setReviewing(true);
     try {
-      await api.put(`/api/admin/violations/${selectedV._id}/review`, { status, review_notes: reviewNotes });
+      await api.put(`/api/admin/violations/${selectedV.id || selectedV._id}/review`, { status, review_notes: reviewNotes });
       toast.success('Violation reviewed');
       setSelectedV(null);
       load();
@@ -110,8 +110,8 @@ export const ViolationsPage: React.FC = () => {
                 <tr><td colSpan={8} className="text-center py-8 text-slate-500">Unable to load violations. Check the error above and retry.</td></tr>
               ) : data.violations.length === 0 ? (
                 <tr><td colSpan={8} className="text-center py-8 text-slate-400">No violations found. Violations are recorded during proctored exams.</td></tr>
-              ) : data.violations.map(v => (
-                <tr key={v._id} className="hover:bg-slate-800/20">
+              ) : data.violations.map((v: any) => (
+                <tr key={v.id || v._id} className="hover:bg-slate-800/20">
                   <td className="px-4 py-3 text-slate-300 text-sm">{v.student_name}</td>
                   <td className="px-4 py-3 text-slate-200 text-sm">{violationLabel(v.violation_type)}</td>
                   <td className="px-4 py-3">

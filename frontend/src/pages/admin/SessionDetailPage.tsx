@@ -242,7 +242,7 @@ export const SessionDetailPage: React.FC = () => {
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-10">
             <div>
-              <InfoRow label="Session ID" value={<span className="font-mono text-xs text-slate-500">{session._id}</span>} />
+              <InfoRow label="Session ID" value={<span className="font-mono text-xs text-slate-500">{session.id || session._id}</span>} />
               <InfoRow label="Status" value={<span className={`font-medium ${statusColor}`}>{statusLabel}</span>} />
               <InfoRow label="Started" value={formatDate(session.started_at)} />
               <InfoRow label="Ended" value={session.ended_at ? formatDate(session.ended_at) : <span className="text-green-400">Still active</span>} />
@@ -290,13 +290,13 @@ export const SessionDetailPage: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-dark-border">
                   {violations.map((v: any) => (
-                    <tr key={v._id} className="hover:bg-slate-800/20">
+                    <tr key={v.id || v._id} className="hover:bg-slate-800/20">
                       <td className="px-4 py-3 text-slate-200 text-sm">{violationLabel(v.violation_type || v.type || 'Unknown')}</td>
                       <td className="px-4 py-3">
                         <Badge variant={severityBadgeVariant(v.severity)}>{(v.severity ?? '?').toUpperCase()}</Badge>
                       </td>
                       <td className="px-4 py-3 text-slate-400 text-sm">{v.confidence != null ? `${Math.round(v.confidence * 100)}%` : '—'}</td>
-                      <td className="px-4 py-3 text-slate-500 text-xs">{formatDate(v.timestamp)}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{formatDate(v.created_at || v.timestamp)}</td>
                       <td className="px-4 py-3">
                         <span className={`text-xs ${
                           v.status === 'open' ? 'text-amber-400' :

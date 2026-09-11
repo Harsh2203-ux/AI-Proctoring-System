@@ -21,11 +21,11 @@ export const FaceEnrolmentPage: React.FC = () => {
   const [aiOnline, setAiOnline] = useState<boolean | null>(null);
   const navigate = useNavigate();
 
-  // Check if the AI / backend enrollment is reachable
+  // Check if backend is reachable
   useEffect(() => {
     const check = async () => {
       try {
-        await api.get('/health');
+        await api.get('/api/health');
         setAiOnline(true);
       } catch {
         setAiOnline(false);
@@ -194,7 +194,7 @@ export const FaceEnrolmentPage: React.FC = () => {
             style={{ background: 'var(--danger-bg)', border: '1px solid var(--danger-border)', color: 'var(--danger-text)' }}>
             <WifiOff className="w-4 h-4 flex-shrink-0" />
             <span>
-              <strong>Backend unreachable.</strong> Make sure the backend (port 8000) and AI service (port 8001) are running.
+              <strong>Backend unreachable.</strong> Make sure the application is properly deployed.
             </span>
           </div>
         )}
@@ -313,7 +313,7 @@ export const FaceEnrolmentPage: React.FC = () => {
               </div>
               {aiOnline === false && (
                 <p className="text-xs text-center" style={{ color: 'var(--danger-text)' }}>
-                  Cannot enrol — backend is unreachable. Start the backend and AI service first.
+                  Cannot enrol — backend is unreachable.
                 </p>
               )}
             </div>

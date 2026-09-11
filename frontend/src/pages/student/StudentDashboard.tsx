@@ -21,7 +21,7 @@ export const StudentDashboard: React.FC = () => {
         ]);
         setExams(examsRes.data);
         setProfile(profileRes.data);
-      } catch (e: any) {
+      } catch (e) {
         console.error('[StudentDashboard] load error:', e);
       } finally {
         setLoading(false);
@@ -127,7 +127,7 @@ export const StudentDashboard: React.FC = () => {
             <div style={{ borderTop: '1px solid var(--border)' }}>
               {exams.map((exam, idx) => (
                 <div
-                  key={exam._id}
+                  key={(exam.id || exam._id) as string}
                   className="p-4 flex items-center justify-between transition-colors"
                   style={{
                     borderTop: idx > 0 ? '1px solid var(--border)' : undefined,
@@ -150,7 +150,7 @@ export const StudentDashboard: React.FC = () => {
                   </div>
                   {exam.status === 'active' && (
                     <button
-                      onClick={() => navigate(`/student/exam/${exam._id}/ready`)}
+                      onClick={() => navigate(`/student/exam/${(exam.id || exam._id) as string}/ready`)}
                       disabled={!profile?.is_face_enrolled}
                       className="flex items-center gap-2 px-5 py-2 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-opacity"
                       style={{ background: 'var(--primary)' }}

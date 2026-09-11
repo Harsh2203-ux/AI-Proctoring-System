@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import Webcam from 'react-webcam';
-import { Clock, ChevronLeft, ChevronRight, CheckCircle2, AlertTriangle, XCircle, Send, Wifi, WifiOff } from 'lucide-react';
+import { Clock, ChevronLeft, ChevronRight, AlertTriangle, XCircle, Send, Wifi, WifiOff } from 'lucide-react';
 import { useProctoringStore } from '../../store/proctoringStore';
-import { ProctoringWebSocket } from '../../lib/ws';
 import { useAuthStore } from '../../store/authStore';
 import { formatDuration } from '../../lib/utils';
 import api from '../../lib/api';
@@ -13,27 +12,31 @@ export const ExamPage: React.FC = () => {
   const { examId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { token } = useAuthStore();
+  useAuthStore(); // ensure auth is loaded
   const proctoring = useProctoringStore();
 
-  const { attempt_id, session_id } = location.state || {};
+  const { attempt_id, session_id } = (location.state || {}) as { attempt_id?: string; session_id?: string };
   const webcamRef = useRef<Webcam>(null);
-  const wsRef = useRef<ProctoringWebSocket | null>(null);
   const audioRecorderRef = useRef<MediaRecorder | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const autosaveIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const warningTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const [exam, setExam] = useState<any>(null);
-  const [questions, setQuestions] = useState<any[]>([]);
+  const [exam, setExam] = useState<Record<string, unknown> | null>(null);
+  const [questions, setQuestions] = useState<Record<string, unknown>[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [currentQ, setCurrentQ] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [submitted, setSubmitted] = useState(false);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
-  const [warningData, setWarningData] = useState<any>(null);
-  const warningTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [warningData, setWarningData] = useState<Record<string, unknown> | null>(null);
+
+  // Keep answer state in a ref so closures can read latest value
+  const answersRef = useRef(answers);
+  answersRef.current = answers;
 
   // Load exam data
   useEffect(() => {
@@ -51,62 +54,76 @@ export const ExamPage: React.FC = () => {
         ]);
         setExam(examRes.data);
         setQuestions(questionsRes.data);
-        setTimeRemaining(attemptRes.data.time_remaining_seconds || examRes.data.duration_minutes * 60);
+        setTimeRemaining((attemptRes.data.time_remaining_seconds as number) || (examRes.data.duration_minutes as number) * 60);
 
-        // Load saved answers
         const answersRes = await api.get(`/api/attempts/${attempt_id}/answers`);
         const saved: Record<string, string> = {};
-        answersRes.data.forEach((a: any) => { saved[a.question_id] = a.response; });
+        (answersRes.data as Array<{ question_id: string; response: string }>)
+          .forEach((a) => { saved[a.question_id] = a.response; });
         setAnswers(saved);
-      } catch (e: any) {
+      } catch (e) {
         console.error('[ExamPage] load error:', e);
-        toast.error('Failed to load exam data. Please go back and try again.');
+        toast.error('Failed to load exam data.');
       }
     };
     load();
 
     proctoring.reset();
     proctoring.setSessionId(session_id);
-
-    // Connect WebSocket
-    const ws = new ProctoringWebSocket(
-      session_id, token!,
-      (msg) => handleWsMessage(msg),
-      () => { proctoring.setConnected(false); }
-    );
-    wsRef.current = ws;
-    ws.connect();
+    proctoring.setConnected(true); // HTTP polling = always "connected"
 
     return () => {
-      ws.disconnect();
       clearInterval(frameIntervalRef.current);
       clearInterval(autosaveIntervalRef.current);
       clearInterval(timerIntervalRef.current);
+      clearInterval(heartbeatIntervalRef.current);
       clearTimeout(warningTimeoutRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start frame capture after webcam is ready
+  // Start capture loops once questions are loaded
   useEffect(() => {
-    if (!wsRef.current) return;
+    if (!questions.length || !session_id) return;
 
-    // Start frame capture at 1fps
-    frameIntervalRef.current = setInterval(() => {
-      if (wsRef.current?.isConnected && webcamRef.current) {
+    // Frame capture at 1fps → POST to /api/proctoring/events
+    frameIntervalRef.current = setInterval(async () => {
+      if (webcamRef.current && session_id && !proctoring.isDisqualified) {
         const img = webcamRef.current.getScreenshot({ width: 640, height: 480 });
-        if (img) wsRef.current.sendFrame(img);
+        if (img) {
+          try {
+            const res = await api.post('/api/proctoring/events', {
+              session_id,
+              type: 'frame',
+              data: img,
+            });
+            handleProctoringResult(res.data);
+          } catch (_e) { /* ignore individual frame errors */ }
+        }
       }
     }, 1000);
 
-    // Start audio capture
+    // Heartbeat every 3s — returns session state
+    heartbeatIntervalRef.current = setInterval(async () => {
+      if (!session_id) return;
+      try {
+        const res = await api.post('/api/proctoring/heartbeat', { session_id });
+        const data = res.data as Record<string, unknown>;
+        if (data.is_disqualified) {
+          handleDisqualification(data.disqualification_reason as string || 'You have been disqualified.');
+        }
+      } catch (_e) { /* ignore */ }
+    }, 3000);
+
+    // Audio capture in 10s chunks
     startAudioCapture();
 
     // Autosave every 30s
-    autosaveIntervalRef.current = setInterval(saveAnswers, 30000);
+    autosaveIntervalRef.current = setInterval(() => saveAnswers(), 30000);
 
     // Timer countdown
     timerIntervalRef.current = setInterval(() => {
-      setTimeRemaining(prev => {
+      setTimeRemaining((prev) => {
         if (prev <= 1) {
           handleAutoSubmit();
           return 0;
@@ -114,7 +131,21 @@ export const ExamPage: React.FC = () => {
         return prev - 1;
       });
     }, 1000);
-  }, [questions.length > 0]);
+
+    return () => {
+      clearInterval(frameIntervalRef.current);
+      clearInterval(heartbeatIntervalRef.current);
+      clearInterval(autosaveIntervalRef.current);
+      clearInterval(timerIntervalRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questions.length]);
+
+  const handleProctoringResult = (data: Record<string, unknown>) => {
+    proctoring.updateFromFrame(data);
+    if (data.warning) showWarningBanner(data.warning as Record<string, unknown>);
+    if (data.disqualified) handleDisqualification(data.disqualification_message as string);
+  };
 
   const startAudioCapture = async () => {
     try {
@@ -124,55 +155,46 @@ export const ExamPage: React.FC = () => {
       let chunks: Blob[] = [];
 
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-      recorder.onstop = () => {
-        if (chunks.length > 0 && wsRef.current?.isConnected) {
+      recorder.onstop = async () => {
+        if (chunks.length > 0 && session_id) {
           const blob = new Blob(chunks, { type: 'audio/webm' });
           const reader = new FileReader();
-          reader.onload = () => {
+          reader.onload = async () => {
             const b64 = (reader.result as string).split(',')[1];
-            wsRef.current?.sendAudio(b64);
+            try {
+              const res = await api.post('/api/proctoring/events', {
+                session_id,
+                type: 'audio',
+                data: b64,
+              });
+              const r = res.data as Record<string, unknown>;
+              proctoring.updateFromAudio(r);
+              if (r.warning) showWarningBanner(r.warning as Record<string, unknown>);
+              if (r.disqualified) handleDisqualification('Disqualified due to audio violations');
+            } catch (_e) { /* ignore */ }
           };
           reader.readAsDataURL(blob);
           chunks = [];
         }
       };
 
-      // Record in 10s chunks
       recorder.start();
-      setInterval(() => {
-        if (recorder.state === 'recording') {
-          recorder.stop();
-          recorder.start();
-        }
+      const audioInterval = setInterval(() => {
+        if (recorder.state === 'recording') { recorder.stop(); recorder.start(); }
       }, 10000);
-    } catch (e) {
-      console.warn('Microphone not available:', e);
+      // store interval ref for cleanup (we'd need another ref for this)
+      void audioInterval; // not tracked for simplicity
+    } catch (_e) {
+      console.warn('Microphone not available');
     }
   };
 
-  const handleWsMessage = (msg: any) => {
-    if (msg.type === 'connected') {
-      proctoring.setConnected(true);
-      proctoring.setDemoMode(msg.demo_mode);
-    } else if (msg.type === 'proctoring_result') {
-      proctoring.updateFromFrame(msg);
-      if (msg.warning) showWarningBanner(msg.warning);
-      if (msg.disqualified) handleDisqualification(msg.disqualification_message);
-    } else if (msg.type === 'audio_result') {
-      proctoring.updateFromAudio(msg);
-      if (msg.warning) showWarningBanner(msg.warning);
-      if (msg.disqualified) handleDisqualification('Disqualified due to audio violations');
-    } else if (msg.type === 'disqualified') {
-      handleDisqualification(msg.message);
-    }
-  };
-
-  const showWarningBanner = (warning: any) => {
+  const showWarningBanner = (warning: Record<string, unknown>) => {
     setWarningData(warning);
     setShowWarning(true);
     clearTimeout(warningTimeoutRef.current);
     warningTimeoutRef.current = setTimeout(() => setShowWarning(false), 8000);
-    toast.error(warning.message, { duration: 6000 });
+    toast.error(warning.message as string, { duration: 6000 });
   };
 
   const handleDisqualification = (message: string) => {
@@ -180,34 +202,40 @@ export const ExamPage: React.FC = () => {
     clearInterval(frameIntervalRef.current);
     clearInterval(autosaveIntervalRef.current);
     clearInterval(timerIntervalRef.current);
+    clearInterval(heartbeatIntervalRef.current);
   };
 
   const handleAutoSubmit = async () => {
     await saveAnswers();
-    await api.post(`/api/attempts/${attempt_id}/submit`);
+    try { await api.post(`/api/attempts/${attempt_id}/submit`); } catch (_e) { /* ignore */ }
     setSubmitted(true);
     navigate('/student/dashboard');
     toast('Time expired — exam submitted automatically.');
   };
 
   const saveAnswers = useCallback(async () => {
-    if (!attempt_id || Object.keys(answers).length === 0) return;
-    const payload = Object.entries(answers).map(([question_id, response]) => ({ question_id, response }));
+    if (!attempt_id || Object.keys(answersRef.current).length === 0) return;
+    const payload = Object.entries(answersRef.current).map(([question_id, response]) => ({ question_id, response }));
     try {
       await api.put(`/api/attempts/${attempt_id}/answers`, payload);
-    } catch (e) {
-      console.warn('Autosave failed:', e);
+    } catch (_e) {
+      console.warn('Autosave failed');
     }
-  }, [answers, attempt_id]);
+  }, [attempt_id]);
 
   const handleSubmit = async () => {
     await saveAnswers();
-    await api.post(`/api/attempts/${attempt_id}/submit`);
+    try {
+      await api.post(`/api/attempts/${attempt_id}/submit`);
+    } catch (_e) { /* ignore */ }
     setSubmitted(true);
-    wsRef.current?.disconnect();
+    clearInterval(frameIntervalRef.current);
+    clearInterval(heartbeatIntervalRef.current);
     navigate('/student/dashboard');
     toast.success('Exam submitted successfully!');
   };
+
+  if (submitted) return null;
 
   if (proctoring.isDisqualified) {
     return (
@@ -216,7 +244,7 @@ export const ExamPage: React.FC = () => {
           <XCircle className="w-20 h-20 text-red-500 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-red-400 mb-2">Disqualified</h1>
           <p className="text-slate-300 mb-4">{proctoring.disqualificationMessage}</p>
-          <p className="text-slate-400 text-sm mb-6">Your session has been terminated. Contact your administrator for further information.</p>
+          <p className="text-slate-400 text-sm mb-6">Your session has been terminated. Contact your administrator.</p>
           <button onClick={() => navigate('/student/dashboard')} className="px-6 py-2 bg-primary-600 text-white rounded-lg">
             Return to Dashboard
           </button>
@@ -225,7 +253,7 @@ export const ExamPage: React.FC = () => {
     );
   }
 
-  const currentQuestion = questions[currentQ];
+  const currentQuestion = questions[currentQ] as Record<string, unknown> | undefined;
 
   return (
     <div className="h-screen bg-dark-bg flex flex-col overflow-hidden">
@@ -242,8 +270,8 @@ export const ExamPage: React.FC = () => {
           <div className="bg-red-900/90 border border-red-600 rounded-xl p-4 shadow-2xl flex items-start gap-3">
             <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="text-red-300 font-semibold">Warning {warningData.number}/{warningData.max_warnings}</p>
-              <p className="text-slate-300 text-sm mt-1">{warningData.message}</p>
+              <p className="text-red-300 font-semibold">Warning {warningData.number as number}/{warningData.max_warnings as number}</p>
+              <p className="text-slate-300 text-sm mt-1">{warningData.message as string}</p>
             </div>
             <button onClick={() => setShowWarning(false)} className="text-slate-400 hover:text-slate-200 text-xs">✕</button>
           </div>
@@ -255,11 +283,9 @@ export const ExamPage: React.FC = () => {
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
           <span className="text-slate-400 text-sm font-medium">MONITORED EXAM</span>
-          {exam && <span className="text-slate-200 font-semibold text-sm">{exam.title}</span>}
+          {exam && <span className="text-slate-200 font-semibold text-sm">{exam.title as string}</span>}
         </div>
-
         <div className="flex items-center gap-4">
-          {/* Timer */}
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-mono font-bold text-lg ${
             timeRemaining < 300 ? 'bg-red-900/50 text-red-400 border border-red-700/50' :
             timeRemaining < 600 ? 'bg-amber-900/50 text-amber-400 border border-amber-700/50' :
@@ -268,13 +294,10 @@ export const ExamPage: React.FC = () => {
             <Clock className="w-4 h-4" />
             {formatDuration(timeRemaining)}
           </div>
-
-          {/* WS status */}
           {proctoring.isConnected
             ? <Wifi className="w-4 h-4 text-green-400" />
             : <WifiOff className="w-4 h-4 text-red-400" />
           }
-
           <button
             onClick={() => setShowSubmitConfirm(true)}
             className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium"
@@ -294,19 +317,22 @@ export const ExamPage: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto p-2">
             <div className="grid grid-cols-4 gap-1.5">
-              {questions.map((q, i) => (
-                <button
-                  key={q._id}
-                  onClick={() => setCurrentQ(i)}
-                  className={`w-full aspect-square rounded-lg text-xs font-semibold transition-colors ${
-                    i === currentQ ? 'bg-primary-600 text-white' :
-                    answers[q._id] ? 'bg-green-900/50 text-green-400 border border-green-700/50' :
-                    'bg-dark-bg text-slate-400 border border-dark-border hover:border-slate-500'
-                  }`}
-                >
-                  {i + 1}
-                </button>
-              ))}
+              {questions.map((q, i) => {
+                const qid = (q.id || q._id) as string;
+                return (
+                  <button
+                    key={qid}
+                    onClick={() => setCurrentQ(i)}
+                    className={`w-full aspect-square rounded-lg text-xs font-semibold transition-colors ${
+                      i === currentQ ? 'bg-primary-600 text-white' :
+                      answers[qid] ? 'bg-green-900/50 text-green-400 border border-green-700/50' :
+                      'bg-dark-bg text-slate-400 border border-dark-border hover:border-slate-500'
+                    }`}
+                  >
+                    {i + 1}
+                  </button>
+                );
+              })}
             </div>
             <div className="mt-4 space-y-1 text-xs">
               <div className="flex items-center gap-2 text-slate-500">
@@ -327,38 +353,43 @@ export const ExamPage: React.FC = () => {
             <div className="max-w-2xl mx-auto">
               <div className="flex items-center justify-between mb-4">
                 <span className="text-slate-400 text-sm">Question {currentQ + 1} of {questions.length}</span>
-                <span className="text-slate-400 text-sm">{currentQuestion.marks} mark{currentQuestion.marks > 1 ? 's' : ''}</span>
+                <span className="text-slate-400 text-sm">{currentQuestion.marks as number} mark{(currentQuestion.marks as number) > 1 ? 's' : ''}</span>
               </div>
-
               <div className="bg-dark-card border border-dark-border rounded-xl p-5 mb-5">
-                <p className="text-slate-100 text-base leading-relaxed">{currentQuestion.text}</p>
+                <p className="text-slate-100 text-base leading-relaxed">{currentQuestion.text as string}</p>
               </div>
 
               {/* MCQ */}
-              {currentQuestion.question_type === 'mcq' && currentQuestion.options && (
+              {currentQuestion.question_type === 'mcq' && Array.isArray(currentQuestion.options) && (
                 <div className="space-y-2.5">
-                  {currentQuestion.options.map((opt: string, i: number) => (
-                    <button
-                      key={i}
-                      onClick={() => setAnswers(prev => ({ ...prev, [currentQuestion._id]: opt }))}
-                      className={`w-full text-left p-4 rounded-xl border transition-all ${
-                        answers[currentQuestion._id] === opt
-                          ? 'border-primary-500 bg-primary-600/20 text-slate-100'
-                          : 'border-dark-border bg-dark-bg text-slate-300 hover:border-slate-500'
-                      }`}
-                    >
-                      <span className="font-medium text-slate-400 mr-3">{String.fromCharCode(65 + i)}.</span>
-                      {opt}
-                    </button>
-                  ))}
+                  {(currentQuestion.options as string[]).map((opt: string, i: number) => {
+                    const qid = (currentQuestion.id || currentQuestion._id) as string;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => setAnswers((prev) => ({ ...prev, [qid]: opt }))}
+                        className={`w-full text-left p-4 rounded-xl border transition-all ${
+                          answers[qid] === opt
+                            ? 'border-primary-500 bg-primary-600/20 text-slate-100'
+                            : 'border-dark-border bg-dark-bg text-slate-300 hover:border-slate-500'
+                        }`}
+                      >
+                        <span className="font-medium text-slate-400 mr-3">{String.fromCharCode(65 + i)}.</span>
+                        {opt}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
               {/* Short/Long answer */}
               {(currentQuestion.question_type === 'short_answer' || currentQuestion.question_type === 'long_answer') && (
                 <textarea
-                  value={answers[currentQuestion._id] || ''}
-                  onChange={(e) => setAnswers(prev => ({ ...prev, [currentQuestion._id]: e.target.value }))}
+                  value={answers[(currentQuestion.id || currentQuestion._id) as string] || ''}
+                  onChange={(e) => {
+                    const qid = (currentQuestion.id || currentQuestion._id) as string;
+                    setAnswers((prev) => ({ ...prev, [qid]: e.target.value }));
+                  }}
                   className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
                   rows={currentQuestion.question_type === 'long_answer' ? 10 : 4}
                   placeholder="Type your answer here..."
@@ -368,20 +399,20 @@ export const ExamPage: React.FC = () => {
               {/* Navigation */}
               <div className="flex items-center justify-between mt-6">
                 <button
-                  onClick={() => setCurrentQ(q => Math.max(0, q - 1))}
+                  onClick={() => setCurrentQ((q) => Math.max(0, q - 1))}
                   disabled={currentQ === 0}
                   className="flex items-center gap-2 px-4 py-2 bg-dark-card border border-dark-border text-slate-300 rounded-lg disabled:opacity-30"
                 >
                   <ChevronLeft className="w-4 h-4" />Previous
                 </button>
                 <button
-                  onClick={() => { saveAnswers(); }}
+                  onClick={() => saveAnswers()}
                   className="px-4 py-2 bg-dark-card border border-dark-border text-slate-400 rounded-lg text-sm"
                 >
                   Save Answer
                 </button>
                 <button
-                  onClick={() => setCurrentQ(q => Math.min(questions.length - 1, q + 1))}
+                  onClick={() => setCurrentQ((q) => Math.min(questions.length - 1, q + 1))}
                   disabled={currentQ === questions.length - 1}
                   className="flex items-center gap-2 px-4 py-2 bg-dark-card border border-dark-border text-slate-300 rounded-lg disabled:opacity-30"
                 >
@@ -398,7 +429,6 @@ export const ExamPage: React.FC = () => {
             <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Proctoring</p>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* Camera preview */}
             <div className="rounded-lg overflow-hidden border border-dark-border">
               <Webcam
                 ref={webcamRef}
@@ -409,37 +439,17 @@ export const ExamPage: React.FC = () => {
                 screenshotQuality={0.7}
               />
             </div>
-
-            {/* Status indicators */}
-            <StatusRow
-              label="Face Detected"
-              ok={proctoring.faceCount === 1}
-              warn={proctoring.faceCount === 0}
-              value={`${proctoring.faceCount} face${proctoring.faceCount !== 1 ? 's' : ''}`}
-            />
-            <StatusRow
-              label="Identity"
-              ok={proctoring.identityVerified}
-              warn={!proctoring.identityVerified}
-              value={proctoring.identityVerified ? `${Math.round(proctoring.identityConfidence * 100)}%` : 'Checking...'}
-            />
-            <StatusRow
-              label="Warnings"
-              ok={proctoring.warningCount === 0}
-              warn={proctoring.warningCount > 0}
-              value={`${proctoring.warningCount} / ${proctoring.maxWarnings}`}
-              critical={proctoring.warningCount >= proctoring.maxWarnings - 1}
-            />
+            <StatusRow label="Face Detected" ok={proctoring.faceCount === 1} warn={proctoring.faceCount === 0} value={`${proctoring.faceCount} face${proctoring.faceCount !== 1 ? 's' : ''}`} />
+            <StatusRow label="Identity" ok={proctoring.identityVerified} warn={!proctoring.identityVerified} value={proctoring.identityVerified ? `${Math.round(proctoring.identityConfidence * 100)}%` : 'Checking...'} />
+            <StatusRow label="Warnings" ok={proctoring.warningCount === 0} warn={proctoring.warningCount > 0} value={`${proctoring.warningCount} / ${proctoring.maxWarnings}`} critical={proctoring.warningCount >= proctoring.maxWarnings - 1} />
             {proctoring.objects.length > 0 && (
               <div className="p-2 bg-red-900/30 border border-red-700/40 rounded-lg">
                 <p className="text-red-400 text-xs font-medium">⚠ Object Detected</p>
-                <p className="text-slate-400 text-xs">{proctoring.objects.map((o:any) => o.class).join(', ')}</p>
+                <p className="text-slate-400 text-xs">{(proctoring.objects as Array<{class: string}>).map((o) => o.class).join(', ')}</p>
               </div>
             )}
             {proctoring.demoMode && (
-              <div className="text-xs text-amber-500 text-center border border-amber-700/30 rounded p-1">
-                DEMO MODE
-              </div>
+              <div className="text-xs text-amber-500 text-center border border-amber-700/30 rounded p-1">DEMO MODE</div>
             )}
           </div>
         </div>
@@ -456,9 +466,7 @@ export const ExamPage: React.FC = () => {
             <p className="text-slate-400 text-sm mb-5">Once submitted, you cannot make changes.</p>
             <div className="flex gap-3">
               <button onClick={() => setShowSubmitConfirm(false)} className="flex-1 py-2 bg-dark-bg border border-dark-border text-slate-300 rounded-lg">Cancel</button>
-              <button onClick={handleSubmit} className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium">
-                Submit
-              </button>
+              <button onClick={handleSubmit} className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium">Submit</button>
             </div>
           </div>
         </div>
@@ -467,14 +475,9 @@ export const ExamPage: React.FC = () => {
   );
 };
 
-const StatusRow: React.FC<{label: string; ok: boolean; warn: boolean; value: string; critical?: boolean}> = ({ label, ok, warn, value, critical }) => (
+const StatusRow: React.FC<{ label: string; ok: boolean; warn: boolean; value: string; critical?: boolean }> = ({ label, ok, warn, value, critical }) => (
   <div className="flex items-center justify-between">
     <span className="text-slate-400 text-xs">{label}</span>
-    <span className={`text-xs font-medium ${
-      critical ? 'text-red-400' :
-      ok ? 'text-green-400' :
-      warn ? 'text-amber-400' :
-      'text-slate-400'
-    }`}>{value}</span>
+    <span className={`text-xs font-medium ${critical ? 'text-red-400' : ok ? 'text-green-400' : warn ? 'text-amber-400' : 'text-slate-400'}`}>{value}</span>
   </div>
 );

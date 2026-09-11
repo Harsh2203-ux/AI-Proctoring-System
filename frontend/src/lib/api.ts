@@ -1,13 +1,12 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-export const api = axios.create({
-  baseURL: API_BASE,
+// Use relative /api path — works on Vercel (same-origin) and locally with vite proxy
+const api = axios.create({
+  baseURL: '',
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Attach JWT token from sessionStorage (per-tab — does NOT bleed across tabs)
+// Attach JWT token from sessionStorage (per-tab isolation)
 api.interceptors.request.use((config) => {
   const token = sessionStorage.getItem('session_access_token');
   if (token) {
@@ -29,4 +28,5 @@ api.interceptors.response.use(
   }
 );
 
+export { api };
 export default api;
