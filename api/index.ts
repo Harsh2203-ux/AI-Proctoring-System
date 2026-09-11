@@ -1003,25 +1003,25 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   if (!admin) return;
 
   // ── Fetch report (generate on-the-fly if absent) ──────────────────────────
-  let report = await queryOne<Record<string, unknown>>(
-    `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
-            e.title AS exam_title, e.duration_minutes
-     FROM proctoring_reports pr
-     LEFT JOIN student_profiles sp ON sp.user_id = pr.student_id
-     LEFT JOIN exams e ON e.id = pr.exam_id
-     WHERE pr.session_id = $1`, [p.sessionId]
-  );
+  // NOTE: email is in the `users` table, NOT in `student_profiles`.
+  // We LEFT JOIN users u to get u.email; sp only has full_name / student_id.
+  const REPORT_SELECT_SQL = `
+    SELECT pr.*,
+           sp.full_name   AS student_name,
+           u.email        AS student_email,
+           e.title        AS exam_title,
+           e.duration_minutes
+    FROM   proctoring_reports pr
+    LEFT JOIN student_profiles sp ON sp.user_id = pr.student_id
+    LEFT JOIN users            u  ON u.id        = pr.student_id
+    LEFT JOIN exams            e  ON e.id         = pr.exam_id
+    WHERE  pr.session_id = $1`;
+
+  let report = await queryOne<Record<string, unknown>>(REPORT_SELECT_SQL, [p.sessionId]);
   if (!report) {
     const generated = await generateReport(p.sessionId);
     if (!generated) return void res.status(404).json({ detail: 'Report not found' });
-    report = await queryOne<Record<string, unknown>>(
-      `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
-              e.title AS exam_title, e.duration_minutes
-       FROM proctoring_reports pr
-       LEFT JOIN student_profiles sp ON sp.user_id = pr.student_id
-       LEFT JOIN exams e ON e.id = pr.exam_id
-       WHERE pr.session_id = $1`, [p.sessionId]
-    ) ?? generated;
+    report = await queryOne<Record<string, unknown>>(REPORT_SELECT_SQL, [p.sessionId]) ?? generated;
   }
 
   // ── Safely parse JSON columns stored as text or objects ───────────────────
