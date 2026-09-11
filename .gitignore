@@ -34,3 +34,5 @@ backend/evidence/reports/
 
 # TypeScript build info
 *.tsbuildinfo
+.vercel
+.env*

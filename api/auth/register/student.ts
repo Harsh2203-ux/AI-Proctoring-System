@@ -19,32 +19,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const pwErr = validatePassword(password || '', confirm_password || '');
   if (pwErr) return res.status(400).json({ detail: pwErr });
 
-  // Check email uniqueness
-  const existing = await queryOne<{ id: string }>(
-    'SELECT id FROM users WHERE email = $1', [email.toLowerCase()]
-  );
-  if (existing) return res.status(400).json({ detail: 'Email already registered' });
+  try {
+    // Check email uniqueness
+    const existing = await queryOne<{ id: string }>(
+      'SELECT id FROM users WHERE email = $1', [email.toLowerCase()]
+    );
+    if (existing) return res.status(400).json({ detail: 'Email already registered' });
 
-  // Check student_id uniqueness
-  const existingProfile = await queryOne<{ id: string }>(
-    'SELECT id FROM student_profiles WHERE student_id = $1', [student_id.trim()]
-  );
-  if (existingProfile) return res.status(400).json({ detail: 'Student ID already registered' });
+    // Check student_id uniqueness
+    const existingProfile = await queryOne<{ id: string }>(
+      'SELECT id FROM student_profiles WHERE student_id = $1', [student_id.trim()]
+    );
+    if (existingProfile) return res.status(400).json({ detail: 'Student ID already registered' });
 
-  const password_hash = await hashPassword(password);
+    const password_hash = await hashPassword(password);
 
-  // Insert user
-  const [user] = await query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, role, is_active)
-     VALUES ($1, $2, 'student', true) RETURNING id`,
-    [email.toLowerCase(), password_hash]
-  );
+    // Insert user
+    const [user] = await query<{ id: string }>(
+      `INSERT INTO users (email, password_hash, role, is_active)
+       VALUES ($1, $2, 'student', true) RETURNING id`,
+      [email.toLowerCase(), password_hash]
+    );
 
-  // Insert student profile
-  await query(
-    `INSERT INTO student_profiles (user_id, full_name, student_id) VALUES ($1, $2, $3)`,
-    [user.id, full_name.trim(), student_id.trim()]
-  );
+    // Insert student profile
+    await query(
+      `INSERT INTO student_profiles (user_id, full_name, student_id) VALUES ($1, $2, $3)`,
+      [user.id, full_name.trim(), student_id.trim()]
+    );
 
-  return res.status(201).json({ message: 'Registration successful', user_id: user.id });
+    console.log(`[student-register] New student registered: ${email.toLowerCase()}`);
+    return res.status(201).json({ message: 'Registration successful', user_id: user.id });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[student-register] Error: ${msg}`);
+    return res.status(500).json({ detail: 'Registration failed due to a server error' });
+  }
 }
