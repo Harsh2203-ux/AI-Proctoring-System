@@ -212,8 +212,9 @@ CREATE INDEX IF NOT EXISTS idx_reports_session           ON proctoring_reports(s
 async function runInit(): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    console.error('[db/init] DATABASE_URL is not set — skipping auto-init');
-    return;
+    // Without DATABASE_URL nothing will work — throw so ensureDb() rejects
+    // and the handler returns a clear 500 rather than a misleading 401.
+    throw new Error('[db/init] DATABASE_URL environment variable is not set');
   }
 
   const pool = new Pool({ connectionString: url });
@@ -224,6 +225,11 @@ async function runInit(): Promise<void> {
     console.log('[db/init] Schema applied');
 
     // 2. Upsert demo admin
+    // FIX: DO UPDATE must also refresh password_hash so the stored hash always
+    // matches the current ADMIN_PASSWORD env var.  Without this, if the row
+    // already existed (e.g. from a previous deployment or a different hashing
+    // library), the new hash is computed but then silently discarded, causing
+    // verifyPassword() to always return false → 401 "Login failed".
     const adminEmail    = process.env.ADMIN_EMAIL    || 'admin@demo.com';
     const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@1234';
     const adminHash = await bcrypt.hash(adminPassword, 12);
@@ -232,7 +238,9 @@ async function runInit(): Promise<void> {
       `INSERT INTO users (email, password_hash, role, is_active)
        VALUES ($1, $2, 'admin', TRUE)
        ON CONFLICT (email) DO UPDATE
-         SET updated_at = NOW()
+         SET password_hash = EXCLUDED.password_hash,
+             is_active     = TRUE,
+             updated_at    = NOW()
        RETURNING id`,
       [adminEmail.toLowerCase(), adminHash]
     );
@@ -244,7 +252,7 @@ async function runInit(): Promise<void> {
     );
     console.log(`[db/init] Demo admin ready: ${adminEmail}`);
 
-    // 3. Upsert demo student
+    // 3. Upsert demo student (same fix applied)
     const studentEmail    = process.env.STUDENT_EMAIL    || 'student@demo.com';
     const studentPassword = process.env.STUDENT_PASSWORD || 'Student@1234';
     const studentHash = await bcrypt.hash(studentPassword, 12);
@@ -253,7 +261,9 @@ async function runInit(): Promise<void> {
       `INSERT INTO users (email, password_hash, role, is_active)
        VALUES ($1, $2, 'student', TRUE)
        ON CONFLICT (email) DO UPDATE
-         SET updated_at = NOW()
+         SET password_hash = EXCLUDED.password_hash,
+             is_active     = TRUE,
+             updated_at    = NOW()
        RETURNING id`,
       [studentEmail.toLowerCase(), studentHash]
     );
@@ -299,9 +309,12 @@ async function runInit(): Promise<void> {
 
     console.log('[db/init] Initialisation complete');
   } catch (err) {
-    // Log the error but do NOT rethrow — a failed init should not bring down the
-    // entire API (e.g. schema already exists on a concurrent cold-start).
+    // Rethrow — let ensureDb() reject so the calling handler can surface a
+    // proper 500 error.  The previous swallowed-error pattern caused login to
+    // proceed against an uninitialised DB, producing a confusing SQL error
+    // that the frontend displayed as "Login failed. Please try again."
     console.error('[db/init] Error during initialisation:', err);
+    throw err;
   } finally {
     client.release();
     await pool.end();
@@ -311,10 +324,17 @@ async function runInit(): Promise<void> {
 /**
  * Call at the top of any handler that requires the database.
  * Runs the full schema migration + demo-seed exactly once per process lifetime.
+ * On failure the promise is cleared so the next request retries, rather than
+ * permanently caching a failed initialisation.
  */
 export function ensureDb(): Promise<void> {
   if (!_initPromise) {
-    _initPromise = runInit();
+    _initPromise = runInit().catch((err) => {
+      // Clear the cached promise so subsequent requests retry init
+      // instead of immediately resolving against a broken database state.
+      _initPromise = null;
+      throw err;
+    });
   }
   return _initPromise;
 }
