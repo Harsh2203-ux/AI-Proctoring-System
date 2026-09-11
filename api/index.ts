@@ -935,6 +935,221 @@ addRoute('admin/reports/:sessionId', async (req, res, p) => {
   res.status(200).json({ ...report, _id: (report as Record<string, unknown>).id });
 });
 
+// ── GET /api/admin/reports/:sessionId/download ────────────────────────────────
+// Returns a PDF file for the proctoring report of the given session.
+// Uses a pure-Node.js minimal PDF writer — no external dependencies required.
+addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
+  if (req.method !== 'GET') return void res.status(405).json({ detail: 'Method not allowed' });
+  const admin = requireAdmin(req, res);
+  if (!admin) return;
+
+  // Fetch report (generate on-the-fly if missing)
+  let report = await queryOne<Record<string, unknown>>(
+    `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
+            e.title AS exam_title, e.duration_minutes
+     FROM proctoring_reports pr
+     LEFT JOIN student_profiles sp ON sp.user_id = pr.student_id
+     LEFT JOIN exams e ON e.id = pr.exam_id
+     WHERE pr.session_id = $1`, [p.sessionId]
+  );
+  if (!report) {
+    const generated = await generateReport(p.sessionId);
+    if (!generated) return void res.status(404).json({ detail: 'Report not found' });
+    // Re-fetch so we have the joined student/exam fields
+    report = await queryOne<Record<string, unknown>>(
+      `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
+              e.title AS exam_title, e.duration_minutes
+       FROM proctoring_reports pr
+       LEFT JOIN student_profiles sp ON sp.user_id = pr.student_id
+       LEFT JOIN exams e ON e.id = pr.exam_id
+       WHERE pr.session_id = $1`, [p.sessionId]
+    ) ?? generated;
+  }
+
+  // ── Parse stored JSON columns ─────────────────────────────────────────────
+  const safeJson = (v: unknown): unknown => {
+    if (v === null || v === undefined) return {};
+    if (typeof v === 'object') return v;
+    try { return JSON.parse(v as string); } catch { return {}; }
+  };
+  const violationSummary = safeJson(report.violation_summary) as Record<string, number>;
+  const fullTimeline     = safeJson(report.full_timeline) as Array<Record<string, unknown>>;
+
+  // ── Build human-readable strings ──────────────────────────────────────────
+  const studentName  = String(report.student_name  || report.student_id || 'Unknown');
+  const studentEmail = String(report.student_email || '');
+  const examTitle    = String(report.exam_title    || report.exam_id    || 'Unknown');
+  const riskScore    = Number(report.risk_score)   || 0;
+  const riskLevel    = String(report.risk_level    || 'low').toUpperCase();
+  const warnings     = Number(report.warning_count) || 0;
+  const disqualified = Boolean(report.disqualification_status);
+  const status       = String(report.submission_status || 'unknown');
+  const generatedAt  = report.generated_at ? new Date(report.generated_at as string).toUTCString() : new Date().toUTCString();
+  const sessionId    = p.sessionId;
+
+  const totalViolations = Object.values(violationSummary).reduce((s, n) => s + n, 0);
+
+  // Violation breakdown lines (at most 20)
+  const violationLines: string[] = Object.entries(violationSummary)
+    .slice(0, 20)
+    .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
+
+  // Timeline lines (at most 30)
+  const timelineLines: string[] = (Array.isArray(fullTimeline) ? fullTimeline : [])
+    .slice(0, 30)
+    .map((item) => {
+      const ts  = String(item.at || item.timestamp || '').split('T')[1]?.substring(0, 8) || '';
+      const typ = String(item.type || item.event_type || '').replace(/_/g, ' ').toUpperCase();
+      const sev = String(item.severity || '');
+      return `${ts}  ${typ}  ${sev ? '[' + sev + ']' : ''}`.trim();
+    });
+
+  // ── Minimal PDF writer ────────────────────────────────────────────────────
+  // Generates a valid, readable PDF 1.4 document using only string buffers.
+  // No binary fonts — uses built-in PDF Helvetica (Latin subset).
+  const pdfLines: string[] = [];
+  const offsets: number[] = [];
+  let byteOffset = 0;
+
+  const emit = (s: string) => { pdfLines.push(s); byteOffset += Buffer.byteLength(s + '\n', 'utf8'); };
+  const obj  = (id: number, content: string) => {
+    offsets[id] = byteOffset;
+    emit(`${id} 0 obj`);
+    emit(content);
+    emit('endobj');
+  };
+
+  // PDF header
+  emit('%PDF-1.4');
+  emit('%\xE2\xE3\xCF\xD3'); // binary comment to mark as binary file
+
+  // Object 1: Catalog
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+
+  // Object 2: Pages (placeholder — updated below)
+  obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+
+  // Object 3: Page
+  obj(3, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+
+  // ── Build page content stream ─────────────────────────────────────────────
+  const lines: string[] = [];
+
+  const section = (title: string) => {
+    lines.push(`BT /F1 13 Tf ${title.length > 0 ? '50 ' + String(lines.length > 0 ? '0' : '0') + ' Td' : ''} ET`);
+  };
+  void section; // suppress unused warning — we build text directly below
+
+  // PDF text content: each entry is [x, y, fontSize, text]
+  type TextItem = { x: number; y: number; size: number; text: string };
+  const textItems: TextItem[] = [];
+
+  // Escape PDF string: backslash, parens
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]/g, '?');
+
+  // Layout constants
+  const PAGE_H = 842;
+  const MARGIN_L = 50;
+  const MARGIN_TOP = PAGE_H - 50;
+  let y = MARGIN_TOP;
+
+  const addText = (text: string, x: number, size: number, bold = false) => {
+    void bold;
+    textItems.push({ x, y, size, text: esc(text) });
+    y -= size + 4;
+  };
+
+  const addLine = () => { y -= 6; };
+  const addSection = (title: string) => {
+    addLine();
+    textItems.push({ x: MARGIN_L, y, size: 12, text: esc('── ' + title + ' ──') });
+    y -= 16;
+  };
+
+  // ── Page content ──────────────────────────────────────────────────────────
+  // Title
+  textItems.push({ x: MARGIN_L, y, size: 18, text: 'AI Proctoring System — Exam Report' }); y -= 26;
+  textItems.push({ x: MARGIN_L, y, size: 9,  text: esc(`Generated: ${generatedAt}`) });      y -= 14;
+  textItems.push({ x: MARGIN_L, y, size: 9,  text: esc(`Session ID: ${sessionId}`) });        y -= 20;
+
+  addSection('Student Information');
+  addText(`Name:   ${studentName}`,  MARGIN_L, 10);
+  addText(`Email:  ${studentEmail}`, MARGIN_L, 10);
+
+  addSection('Exam Information');
+  addText(`Exam:   ${examTitle}`, MARGIN_L, 10);
+
+  addSection('Risk Assessment');
+  addText(`Risk Score:  ${riskScore} / 100`,              MARGIN_L, 10);
+  addText(`Risk Level:  ${riskLevel}`,                    MARGIN_L, 10);
+  addText(`Warnings:    ${warnings}`,                     MARGIN_L, 10);
+  addText(`Total Violations: ${totalViolations}`,         MARGIN_L, 10);
+  addText(`Status:      ${status.toUpperCase()}`,         MARGIN_L, 10);
+  addText(`Disqualified: ${disqualified ? 'YES' : 'NO'}`, MARGIN_L, 10);
+
+  if (violationLines.length > 0) {
+    addSection('Violation Breakdown');
+    for (const vl of violationLines) addText(vl, MARGIN_L + 10, 9);
+  }
+
+  if (timelineLines.length > 0) {
+    addSection('Event Timeline (first 30)');
+    for (const tl of timelineLines) {
+      if (y < 60) break; // don't overflow a single page
+      addText(tl, MARGIN_L + 10, 8);
+    }
+  }
+
+  // Build stream from textItems
+  const streamParts: string[] = ['q'];
+  // Header bar
+  streamParts.push('0.12 0.16 0.25 rg');
+  streamParts.push(`${MARGIN_L - 5} ${MARGIN_TOP - 38} ${595 - MARGIN_L * 2 + 10} 44 re f`);
+  streamParts.push('Q');
+  // Draw text
+  for (const item of textItems) {
+    const isHeader = item.size >= 18;
+    const r = isHeader ? 1 : (item.size >= 12 ? 0.6 : 0.13);
+    const g = isHeader ? 1 : (item.size >= 12 ? 0.75 : 0.16);
+    const b = isHeader ? 1 : (item.size >= 12 ? 0.9  : 0.25);
+    streamParts.push(`BT`);
+    streamParts.push(`/F1 ${item.size} Tf`);
+    streamParts.push(`${r} ${g} ${b} rg`);
+    streamParts.push(`${item.x} ${item.y} Td`);
+    streamParts.push(`(${item.text}) Tj`);
+    streamParts.push(`ET`);
+  }
+  const stream = streamParts.join('\n');
+
+  // Object 4: Content stream
+  obj(4, `<< /Length ${Buffer.byteLength(stream, 'utf8')} >>\nstream\n${stream}\nendstream`);
+
+  // Object 5: Font
+  obj(5, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+
+  // xref table
+  const xrefOffset = byteOffset;
+  const xrefLines = ['xref', `0 ${offsets.length + 1}`, '0000000000 65535 f '];
+  for (let i = 1; i < offsets.length + 1; i++) {
+    xrefLines.push(String(offsets[i] ?? 0).padStart(10, '0') + ' 00000 n ');
+  }
+  xrefLines.push('trailer');
+  xrefLines.push(`<< /Size ${offsets.length + 1} /Root 1 0 R >>`);
+  xrefLines.push('startxref');
+  xrefLines.push(String(xrefOffset));
+  xrefLines.push('%%EOF');
+
+  const fullPdf = [...pdfLines, ...xrefLines].join('\n');
+  const pdfBuffer = Buffer.from(fullPdf, 'utf8');
+
+  const safeName = `report_${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('Content-Length', pdfBuffer.length);
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).end(pdfBuffer);
+});
+
 // ── GET /api/admin/disqualifications ──────────────────────────────────────────
 addRoute('admin/disqualifications', async (req, res, _p) => {
   if (req.method !== 'GET') return void res.status(405).json({ detail: 'Method not allowed' });

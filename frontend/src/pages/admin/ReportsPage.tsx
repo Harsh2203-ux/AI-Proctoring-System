@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { FileText, Download, Eye, RefreshCw, AlertCircle } from 'lucide-react';
+import { Download, Eye, RefreshCw, AlertCircle } from 'lucide-react';
 import api from '../../lib/api';
 import { AdminLayout } from './AdminLayout';
 import { formatDate } from '../../lib/utils';
@@ -10,7 +9,8 @@ export const ReportsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<any>(null);
-  const navigate = useNavigate();
+  const [downloadError, setDownloadError] = useState('');
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,15 +39,44 @@ export const ReportsPage: React.FC = () => {
   };
 
   const downloadPdf = async (sessionId: string) => {
+    setDownloadError('');
+    setDownloading(sessionId);
     try {
-      const res = await api.get(`/api/admin/reports/${sessionId}/pdf`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
+      const res = await api.get(`/api/admin/reports/${sessionId}/download`, {
+        responseType: 'blob',
+      });
+
+      // Detect server-side error returned as JSON blob (e.g. 404 / 500)
+      const rawCT = res.headers['content-type'];
+      const contentType = Array.isArray(rawCT) ? rawCT.join(',') : String(rawCT ?? '');
+      if (!contentType.includes('application/pdf')) {
+        let detail = 'Server did not return a PDF.';
+        try {
+          const text = await (res.data as Blob).text();
+          const json = JSON.parse(text);
+          detail = json.detail || detail;
+        } catch { /* ignore parse error */ }
+        throw new Error(detail);
+      }
+
+      const url = URL.createObjectURL(res.data as Blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `report_${sessionId}.pdf`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
+      // Revoke after a short delay so the download has time to start
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e: any) {
+      const msg =
+        e.response?.data instanceof Blob
+          ? await e.response.data.text().then((t: string) => { try { return JSON.parse(t).detail; } catch { return t; } }).catch(() => e.message)
+          : e.response?.data?.detail ?? e.message ?? 'Download failed';
+      setDownloadError(String(msg));
       console.error('[ReportsPage] downloadPdf error:', e);
+    } finally {
+      setDownloading(null);
     }
   };
 
@@ -60,17 +89,25 @@ export const ReportsPage: React.FC = () => {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-100">Proctoring Reports</h1>
-          {error && (
-            <button onClick={load} className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg bg-slate-700 text-slate-200 hover:bg-slate-600">
-              <RefreshCw className="w-4 h-4" /> Retry
-            </button>
-          )}
+          <button onClick={load} className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg bg-slate-700 text-slate-200 hover:bg-slate-600">
+            <RefreshCw className="w-4 h-4" /> Refresh
+          </button>
         </div>
 
         {error && (
           <div className="mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3 text-sm bg-red-950/50 border border-red-800/60 text-red-400">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {downloadError && (
+          <div className="mb-4 flex items-start justify-between gap-2.5 rounded-lg px-4 py-3 text-sm bg-orange-950/50 border border-orange-800/60 text-orange-400">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>Download failed: {downloadError}</span>
+            </div>
+            <button onClick={() => setDownloadError('')} className="ml-2 text-orange-400 hover:text-orange-200 flex-shrink-0">✕</button>
           </div>
         )}
 
@@ -122,8 +159,15 @@ export const ReportsPage: React.FC = () => {
                       <button onClick={() => viewReport(r.session_id)} className="p-1.5 text-slate-400 hover:text-blue-400 rounded" title="View">
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button onClick={() => downloadPdf(r.session_id)} className="p-1.5 text-slate-400 hover:text-green-400 rounded" title="Download PDF">
-                        <Download className="w-4 h-4" />
+                      <button
+                        onClick={() => downloadPdf(r.session_id)}
+                        disabled={downloading === r.session_id}
+                        className="p-1.5 text-slate-400 hover:text-green-400 rounded disabled:opacity-50 disabled:cursor-wait"
+                        title="Download PDF"
+                      >
+                        {downloading === r.session_id
+                          ? <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          : <Download className="w-4 h-4" />}
                       </button>
                     </div>
                   </td>
@@ -193,8 +237,14 @@ export const ReportsPage: React.FC = () => {
 
             <div className="flex gap-3 mt-5">
               <button onClick={() => setSelected(null)} className="flex-1 py-2 bg-dark-bg border border-dark-border text-slate-300 rounded-lg text-sm">Close</button>
-              <button onClick={() => downloadPdf(selected.session_id)} className="flex-1 flex items-center justify-center gap-2 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium">
-                <Download className="w-4 h-4" />Download PDF
+              <button
+                onClick={() => downloadPdf(selected.session_id)}
+                disabled={downloading === selected.session_id}
+                className="flex-1 flex items-center justify-center gap-2 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-60 disabled:cursor-wait"
+              >
+                {downloading === selected.session_id
+                  ? <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Downloading…</>
+                  : <><Download className="w-4 h-4" />Download PDF</>}
               </button>
             </div>
           </div>
