@@ -15,14 +15,23 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle 401 — clear this tab's session and redirect to login
+// Handle 401 — clear this tab's session and redirect to login.
+// IMPORTANT: Do NOT redirect when already on /login (or /register).
+// Redirecting on the login page itself would cause a page reload that
+// discards the error state, making failed login attempts appear to silently
+// reset the form with no error message displayed to the user.
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      sessionStorage.removeItem('session_access_token');
-      sessionStorage.removeItem('session_user');
-      window.location.href = '/login';
+      const isAuthPage =
+        window.location.pathname === '/login' ||
+        window.location.pathname === '/register';
+      if (!isAuthPage) {
+        sessionStorage.removeItem('session_access_token');
+        sessionStorage.removeItem('session_user');
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }

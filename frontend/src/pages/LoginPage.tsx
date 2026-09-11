@@ -77,8 +77,17 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     setError('');
     setLoading(true);
+    // Trim whitespace from both fields before sending — guards against
+    // accidental leading/trailing spaces introduced by typing or autofill.
+    const trimmedEmail = email.trim();
+    const trimmedPassword = password.trim();
+    if (!trimmedEmail || !trimmedPassword) {
+      setError('Email and password are required.');
+      setLoading(false);
+      return;
+    }
     try {
-      const res = await api.post('/api/auth/login', { email, password });
+      const res = await api.post('/api/auth/login', { email: trimmedEmail, password: trimmedPassword });
       const { access_token, user } = res.data;
       login(user, access_token);
       toast.success(`Welcome back, ${user.full_name}!`);
@@ -101,10 +110,38 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const fillDemo = (role: 'admin' | 'student') => {
-    setEmail(role === 'admin' ? 'admin@demo.com' : 'student@demo.com');
-    setPassword(role === 'admin' ? 'Admin@1234' : 'Student@1234');
+  const handleDemoLogin = async (role: 'admin' | 'student') => {
+    const demoEmail = role === 'admin' ? 'admin@demo.com' : 'student@demo.com';
+    const demoPassword = role === 'admin' ? 'Admin@1234' : 'Student@1234';
+    // Fill the form inputs so the user can see what was used
+    setEmail(demoEmail);
+    setPassword(demoPassword);
     setError('');
+    setLoading(true);
+    // Then submit directly — avoids the "fill then click Sign In" two-step
+    // and ensures demo login always works even on first page load.
+    try {
+      const res = await api.post('/api/auth/login', { email: demoEmail, password: demoPassword });
+      const { access_token, user } = res.data;
+      login(user, access_token);
+      toast.success(`Welcome back, ${user.full_name}!`);
+      navigate(user.role === 'admin' ? '/admin/dashboard' : '/student/dashboard');
+    } catch (err: any) {
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      if (status === 401 || status === 403) {
+        setError(detail || 'Demo login failed. Please try again.');
+      } else if (status === 500) {
+        setError('A server error occurred. Please try again in a moment.');
+        console.error('[demo-login] Server error:', detail);
+      } else if (!err.response) {
+        setError('Unable to reach the server. Please check your connection.');
+      } else {
+        setError(detail || 'Demo login failed. Please try again.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const isDark = theme === 'dark';
@@ -326,7 +363,7 @@ export const LoginPage: React.FC = () => {
                 <button
                   key={role}
                   type="button"
-                  onClick={() => fillDemo(role)}
+                  onClick={() => handleDemoLogin(role)}
                   className="rounded-lg px-3 py-2.5 text-left transition-colors"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
                   onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.borderColor = role === 'admin' ? 'var(--cyan)' : '#8b5cf6')}
