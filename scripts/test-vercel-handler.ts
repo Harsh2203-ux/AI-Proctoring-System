@@ -101,13 +101,21 @@ function buildReportPdf(report: Record<string, unknown>, sessionId: string): Buf
   const totalViolations = Object.values(violationSummary).reduce((s, n) => s + (Number(n) || 0), 0);
   const violationLines = Object.entries(violationSummary).slice(0, 20)
     .map(([k, v]) => pdfStr(`${k.replace(/_/g, ' ')}: ${v}`));
-  const timelineLines = (Array.isArray(fullTimeline) ? fullTimeline : []).slice(0, 30)
+  const timelineLines = (Array.isArray(fullTimeline) ? fullTimeline : []).slice(0, 25)
     .map(item => {
       const ts  = String(item.at || item.timestamp || '').split('T')[1]?.substring(0, 8) || '';
       const typ = String(item.type || item.event_type || '').replace(/_/g, ' ').toUpperCase();
       const sev = String(item.severity || '');
       return pdfStr(`${ts}  ${typ}${sev ? '  [' + sev + ']' : ''}`);
     });
+
+  // Performance / marks
+  const qTotal     = Number(report.questions_total)    || 0;
+  const qAttempted = Number(report.questions_attempted) || 0;
+  const qCorrect   = Number(report.correct_answers)    || 0;
+  const mObtained  = Number(report.marks_obtained)     || 0;
+  const mTotal     = Number(report.marks_total)        || 0;
+  const hasMarks   = qTotal > 0;
 
   const parts: string[] = [];
   const objOffsets: number[] = [];
@@ -127,25 +135,56 @@ function buildReportPdf(report: Record<string, unknown>, sessionId: string): Buf
   beginObj(2); emit('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'); endObj();
   beginObj(3);
   emit('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842]');
-  emit('   /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+  emit('   /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>');
   endObj();
 
-  const PAGE_W = 595; const PAGE_H = 842; const ML = 50; const TOP = PAGE_H - 50;
+  const PAGE_W = 595, PAGE_H = 842, ML = 50, MR = 545, TOP = PAGE_H - 50;
   let cy = TOP;
-  type TItem = { x: number; y: number; size: number; text: string };
-  const items: TItem[] = [];
-  const addItem = (text: string, x: number, size: number) => { items.push({ x, y: cy, size, text }); cy -= size + 4; };
-  const gap  = (n = 6) => { cy -= n; };
-  const head = (label: string) => { gap(); addItem(`-- ${label} --`, ML, 11); cy -= 4; };
 
-  addItem('AI Proctoring System - Exam Report', ML, 18);
-  addItem(`Generated: ${generatedAt}`, ML, 9);
-  addItem(`Session ID: ${pdfStr(sessionId)}`, ML, 9);
+  type TItem = { x: number; y: number; size: number; text: string; bold?: boolean; color?: [number, number, number] };
+  const items: TItem[] = [];
+  const addItem = (text: string, x: number, size: number, opts: { bold?: boolean; color?: [number, number, number] } = {}) => {
+    items.push({ x, y: cy, size, text, ...opts });
+    cy -= size + 5;
+  };
+  const gap = (n = 8) => { cy -= n; };
+
+  type SectionHeader = { y: number; label: string };
+  const sectionHeaders: SectionHeader[] = [];
+  const head = (label: string) => {
+    gap(10);
+    sectionHeaders.push({ y: cy, label });
+    cy -= 20;
+  };
+
+  // Header block
+  const HDR_H = 56;
+  const HDR_Y = TOP - HDR_H;
+  const titleText = 'AI Proctoring System - Exam Report';
+  const titleX = Math.round((PAGE_W - 255) / 2);
+  items.push({ x: titleX, y: TOP - 22, size: 16, text: pdfStr(titleText), bold: true, color: [1, 1, 1] });
+  items.push({ x: ML, y: HDR_Y + 10, size: 8, text: `Generated: ${generatedAt}`, color: [0.78, 0.87, 0.96] });
+  const sessionLabel = pdfStr(`Session: ${sessionId}`);
+  const sessionX = Math.max(ML, Math.round(MR - sessionLabel.length * 4.5));
+  items.push({ x: sessionX, y: HDR_Y + 10, size: 8, text: sessionLabel, color: [0.78, 0.87, 0.96] });
+  cy = HDR_Y - 14;
+
   head('Student Information');
   addItem(`Name:   ${studentName}`, ML + 10, 10);
   addItem(`Email:  ${studentEmail}`, ML + 10, 10);
+
   head('Exam Information');
   addItem(`Exam:   ${examTitle}`, ML + 10, 10);
+
+  head('Performance Summary');
+  if (hasMarks) {
+    addItem(`Marks Obtained:      ${mObtained} / ${mTotal}`,  ML + 10, 10, { bold: true });
+    addItem(`Questions Attempted: ${qAttempted} / ${qTotal}`, ML + 10, 10);
+    addItem(`Correct Answers:     ${qCorrect} / ${qTotal}`,   ML + 10, 10);
+  } else {
+    addItem('Marks Obtained:      N/A (no questions added to exam)', ML + 10, 10);
+  }
+
   head('Risk Assessment');
   addItem(`Risk Score:       ${riskScore} / 100`,             ML + 10, 10);
   addItem(`Risk Level:       ${riskLevel}`,                   ML + 10, 10);
@@ -153,16 +192,40 @@ function buildReportPdf(report: Record<string, unknown>, sessionId: string): Buf
   addItem(`Total Violations: ${totalViolations}`,             ML + 10, 10);
   addItem(`Status:           ${status}`,                      ML + 10, 10);
   addItem(`Disqualified:     ${disqualified ? 'YES' : 'NO'}`, ML + 10, 10);
-  if (violationLines.length > 0) { head('Violation Breakdown'); for (const vl of violationLines) { if (cy > 60) addItem(vl, ML + 10, 9); } }
-  if (timelineLines.length > 0)  { head('Event Timeline');      for (const tl of timelineLines)  { if (cy > 60) addItem(tl, ML + 10, 8); } }
+
+  if (violationLines.length > 0) {
+    head('Violation Breakdown');
+    for (const vl of violationLines) { if (cy > 80) addItem(vl, ML + 10, 9); }
+  }
+  if (timelineLines.length > 0) {
+    head('Event Timeline');
+    for (const tl of timelineLines) { if (cy > 80) addItem(tl, ML + 10, 8); }
+  }
+
+  gap(12);
+  addItem('Generated by AI Proctoring System', ML, 8, { color: [0.5, 0.5, 0.5] });
 
   const ops: string[] = [];
+  // Dark-blue header rectangle
   ops.push(`0.12 0.16 0.25 rg`);
-  ops.push(`${ML - 5} ${TOP - 34} ${PAGE_W - ML * 2 + 10} 42 re f`);
+  ops.push(`${ML - 5} ${HDR_Y} ${PAGE_W - (ML - 5) * 2} ${HDR_H} re f`);
+  // Section header bars (navy blue)
+  ops.push(`0.12 0.22 0.40 rg`);
+  for (const sh of sectionHeaders) {
+    ops.push(`${ML - 5} ${sh.y - 14} ${PAGE_W - (ML - 5) * 2} 18 re f`);
+  }
+  // Section header text (white, bold F2)
+  for (const sh of sectionHeaders) {
+    ops.push(`BT /F2 10 Tf 1 1 1 rg ${ML + 2} ${sh.y - 10} Td (${pdfStr(sh.label)}) Tj ET`);
+  }
+  // Horizontal rule before footer
+  const ruleY = Math.max(cy + 14, 70);
+  ops.push(`0.7 0.7 0.7 RG 0.5 w ${ML - 5} ${ruleY} m ${MR + 5} ${ruleY} l S`);
+  // Text items
   for (const it of items) {
-    const isTitle = it.size >= 18;
-    const [r, g, b] = isTitle ? [1, 1, 1] : it.size >= 11 ? [0.6, 0.75, 0.9] : [0.1, 0.1, 0.1];
-    ops.push(`BT /F1 ${it.size} Tf ${r} ${g} ${b} rg ${it.x} ${it.y} Td (${it.text}) Tj ET`);
+    const [r, g, b] = it.color ?? [0.1, 0.1, 0.1];
+    const font = it.bold ? 'F2' : 'F1';
+    ops.push(`BT /${font} ${it.size} Tf ${r} ${g} ${b} rg ${it.x} ${it.y} Td (${it.text}) Tj ET`);
   }
 
   const streamBody = ops.join('\n') + '\n';
@@ -176,9 +239,14 @@ function buildReportPdf(report: Record<string, unknown>, sessionId: string): Buf
   emit('endstream');
   endObj();
 
+  // Object 5: Helvetica (regular)
   beginObj(5);
-  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica');
-  emit('   /Encoding /WinAnsiEncoding >>');
+  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  endObj();
+
+  // Object 6: Helvetica-Bold
+  beginObj(6);
+  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   endObj();
 
   const xrefPos  = pos;
@@ -200,17 +268,19 @@ function buildReportPdf(report: Record<string, unknown>, sessionId: string): Buf
 
 // ─── PDF validator ───────────────────────────────────────────────────────────
 
-function validatePdf(buf: Buffer, label: string): void {
+function validatePdf(buf: Buffer, label: string, extraChecks: [string, boolean, string][] = []): void {
   const text = buf.toString('latin1');
   const checks: [string, boolean, string][] = [
-    ['Header %PDF-1.4',     text.startsWith('%PDF-1.4\n'),       `starts with: "${text.slice(0,10)}"`],
-    ['Contains %%EOF',      text.includes('%%EOF'),              ''],
-    ['Contains xref',       text.includes('\nxref\n'),           ''],
-    ['Contains startxref',  text.includes('startxref\n'),        ''],
-    ['Contains /Catalog',   text.includes('/Catalog'),           ''],
-    ['Contains /Font',      text.includes('/Font'),              ''],
-    ['Min size (>500 B)',   buf.length >= 500,                   `actual: ${buf.length}`],
-    ['Title text present',  text.includes('AI Proctoring'),      ''],
+    ['Header %PDF-1.4',          text.startsWith('%PDF-1.4\n'),       `starts with: "${text.slice(0,10)}"`],
+    ['Contains %%EOF',           text.includes('%%EOF'),              ''],
+    ['Contains xref',            text.includes('\nxref\n'),           ''],
+    ['Contains startxref',       text.includes('startxref\n'),        ''],
+    ['Contains /Catalog',        text.includes('/Catalog'),           ''],
+    ['Contains /Font',           text.includes('/Font'),              ''],
+    ['Min size (>500 B)',        buf.length >= 500,                   `actual: ${buf.length}`],
+    ['Title text present',       text.includes('AI Proctoring'),      ''],
+    ['Performance Summary head', text.includes('Performance Summary'), ''],
+    ...extraChecks,
   ];
 
   // xref offset check
@@ -259,32 +329,42 @@ function simulateHandler(reportData: Record<string, unknown>, sessionId: string)
 async function main() {
   console.log('\n=== Vercel Handler Integration Test ===\n');
 
-  // Test 1: submitted, no violations (like a clean student)
-  console.log('Test 1: Submitted report, no violations');
+  // Test 1: submitted, no violations, WITH marks (clean student who scored well)
+  console.log('Test 1: Submitted report, no violations, with marks');
   const r1 = simulateHandler({
-    student_name:  'Alice Smith',
-    student_email: 'alice@test.com',
-    exam_title:    'Demo Examination',
-    risk_score:    0,
-    risk_level:    'low',
-    warning_count: 0,
+    student_name:         'Alice Smith',
+    student_email:        'alice@test.com',
+    exam_title:           'Demo Examination',
+    risk_score:           0,
+    risk_level:           'low',
+    warning_count:        0,
     disqualification_status: false,
-    submission_status: 'submitted',
-    violation_summary: '{}',
-    full_timeline: '[]',
-    generated_at: '2024-09-10T13:00:00.000Z',
+    submission_status:    'submitted',
+    violation_summary:    '{}',
+    full_timeline:        '[]',
+    generated_at:         '2024-09-10T13:00:00.000Z',
+    // Marks data
+    questions_total:      10,
+    questions_attempted:  9,
+    correct_answers:      7,
+    marks_obtained:       35,
+    marks_total:          50,
   }, 'aaaaaaaa-0001-0001-0001-000000000001');
   if (r1._status !== 200) throw new Error(`Expected 200, got ${r1._status}`);
   if (!r1._headers['content-type']?.includes('application/pdf')) throw new Error(`Wrong CT: ${r1._headers['content-type']}`);
   if (!r1._headers['content-disposition']?.includes('.pdf')) throw new Error('Missing filename');
   const pdf1 = r1._body as Buffer;
   console.log(`  HTTP ${r1._status}, CT=${r1._headers['content-type']}, size=${pdf1.length}B`);
-  validatePdf(pdf1, 'submitted clean');
+  validatePdf(pdf1, 'submitted clean', [
+    ['Marks Obtained in PDF', pdf1.toString('latin1').includes('Marks Obtained'), ''],
+    ['35 / 50 in PDF',        pdf1.toString('latin1').includes('35 / 50'),        ''],
+    ['7 / 10 correct',        pdf1.toString('latin1').includes('7 / 10'),         ''],
+  ]);
   fs.writeFileSync(path.join(__dirname, 'integration-clean.pdf'), pdf1);
   console.log('  ✓ Written scripts/integration-clean.pdf\n');
 
-  // Test 2: disqualified with violations and timeline
-  console.log('Test 2: Disqualified report with violations');
+  // Test 2: disqualified with violations, no marks (exam had no questions yet)
+  console.log('Test 2: Disqualified report with violations, no marks');
   const r2 = simulateHandler({
     student_name:  'Bob Jones',
     student_email: 'bob@test.com',
@@ -296,21 +376,24 @@ async function main() {
     submission_status: 'disqualified',
     violation_summary: JSON.stringify({ face_not_visible: 4, multiple_faces: 2, tab_switch: 5 }),
     full_timeline: JSON.stringify([
-      { type: 'face_not_visible', severity: 'high',    at: '2024-09-10T09:01:00Z', confidence: 0.91 },
-      { type: 'tab_switch',       severity: 'medium',  at: '2024-09-10T09:03:30Z', confidence: 0.85 },
+      { type: 'face_not_visible', severity: 'high',     at: '2024-09-10T09:01:00Z', confidence: 0.91 },
+      { type: 'tab_switch',       severity: 'medium',   at: '2024-09-10T09:03:30Z', confidence: 0.85 },
       { type: 'multiple_faces',   severity: 'critical', at: '2024-09-10T09:05:00Z', confidence: 0.98 },
     ]),
     generated_at: '2024-09-10T09:30:00.000Z',
+    // No marks data (questions_total = 0) → shows N/A fallback
   }, 'bbbbbbbb-0002-0002-0002-000000000002');
   if (r2._status !== 200) throw new Error(`Expected 200, got ${r2._status}`);
   const pdf2 = r2._body as Buffer;
   console.log(`  HTTP ${r2._status}, CT=${r2._headers['content-type']}, size=${pdf2.length}B`);
-  validatePdf(pdf2, 'disqualified with violations');
+  validatePdf(pdf2, 'disqualified with violations', [
+    ['N/A fallback for no marks', pdf2.toString('latin1').includes('N/A'), ''],
+  ]);
   fs.writeFileSync(path.join(__dirname, 'integration-violations.pdf'), pdf2);
   console.log('  ✓ Written scripts/integration-violations.pdf\n');
 
-  // Test 3: JSONB columns already parsed (PostgreSQL returns objects, not strings)
-  console.log('Test 3: JSONB columns already parsed as objects (PostgreSQL behaviour)');
+  // Test 3: JSONB columns already parsed (PostgreSQL returns objects, not strings), with marks
+  console.log('Test 3: JSONB columns already parsed as objects (PostgreSQL behaviour), with marks');
   const r3 = simulateHandler({
     student_name:  'Carol White',
     student_email: 'carol@test.com',
@@ -325,11 +408,20 @@ async function main() {
       { type: 'face_not_visible', severity: 'medium', at: '2024-09-10T10:10:00Z', confidence: 0.75 },
     ],
     generated_at: '2024-09-10T10:30:00.000Z',
+    // Marks data
+    questions_total:      5,
+    questions_attempted:  5,
+    correct_answers:      4,
+    marks_obtained:       8,
+    marks_total:          10,
   }, 'cccccccc-0003-0003-0003-000000000003');
   if (r3._status !== 200) throw new Error(`Expected 200, got ${r3._status}`);
   const pdf3 = r3._body as Buffer;
   console.log(`  HTTP ${r3._status}, CT=${r3._headers['content-type']}, size=${pdf3.length}B`);
-  validatePdf(pdf3, 'JSONB as objects');
+  validatePdf(pdf3, 'JSONB as objects', [
+    ['8 / 10 marks',      pdf3.toString('latin1').includes('8 / 10'),  ''],
+    ['4 / 5 correct',     pdf3.toString('latin1').includes('4 / 5'),   ''],
+  ]);
   fs.writeFileSync(path.join(__dirname, 'integration-jsonb.pdf'), pdf3);
   console.log('  ✓ Written scripts/integration-jsonb.pdf\n');
 
@@ -347,11 +439,18 @@ async function main() {
     violation_summary: {},
     full_timeline: [],
     generated_at: null,
+    questions_total: 3,
+    questions_attempted: 2,
+    correct_answers: 1,
+    marks_obtained: 5,
+    marks_total: 15,
   }, 'dddddddd-0004-0004-0004-000000000004');
   if (r4._status !== 200) throw new Error(`Expected 200, got ${r4._status}`);
   const pdf4 = r4._body as Buffer;
   console.log(`  HTTP ${r4._status}, CT=${r4._headers['content-type']}, size=${pdf4.length}B`);
-  validatePdf(pdf4, 'special chars');
+  validatePdf(pdf4, 'special chars', [
+    ['5 / 15 marks', pdf4.toString('latin1').includes('5 / 15'), ''],
+  ]);
   fs.writeFileSync(path.join(__dirname, 'integration-special.pdf'), pdf4);
   console.log('  ✓ Written scripts/integration-special.pdf\n');
 

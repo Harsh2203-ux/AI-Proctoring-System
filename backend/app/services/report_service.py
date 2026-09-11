@@ -2,13 +2,59 @@
 from app.db.connection import get_db
 from bson import ObjectId
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
 import os
 
 logger = logging.getLogger(__name__)
 
 SEVERITY_WEIGHTS = {"critical": 30, "high": 15, "medium": 8, "low": 3}
+
+
+async def calc_marks(exam_id: str, attempt_id: str) -> Dict[str, Any]:
+    """
+    Calculate marks for a given exam attempt.
+    Compares each student answer (trimmed, lowercase) against the question's
+    correct_answer field.  Returns:
+      marks_obtained, marks_total, questions_total, questions_attempted, correct_answers
+    """
+    db = get_db()
+
+    questions = []
+    async for q in db.questions.find({"exam_id": exam_id}):
+        questions.append(q)
+
+    answers = []
+    async for a in db.answers.find({"attempt_id": attempt_id}):
+        answers.append(a)
+
+    answer_map: Dict[str, str] = {}
+    for a in answers:
+        qid = str(a.get("question_id", ""))
+        answer_map[qid] = a.get("response") or ""
+
+    marks_obtained = 0
+    marks_total = 0
+    correct_answers = 0
+    questions_attempted = sum(1 for a in answers if (a.get("response") or "").strip())
+
+    for q in questions:
+        qid = str(q.get("_id", ""))
+        q_marks = float(q.get("marks") or 1)
+        marks_total += q_marks
+        student_resp = answer_map.get(qid, "").strip().lower()
+        correct_resp = (q.get("correct_answer") or "").strip().lower()
+        if correct_resp and student_resp and student_resp == correct_resp:
+            marks_obtained += q_marks
+            correct_answers += 1
+
+    return {
+        "marks_obtained": round(marks_obtained, 1),
+        "marks_total": round(marks_total, 1),
+        "questions_total": len(questions),
+        "questions_attempted": questions_attempted,
+        "correct_answers": correct_answers,
+    }
 
 
 async def generate_report(session_id: str) -> Dict[str, Any]:
@@ -114,6 +160,9 @@ async def generate_report(session_id: str) -> Dict[str, Any]:
         return datetime.min
     timeline.sort(key=ts_key)
 
+    # Calculate marks from actual student answers vs correct answers
+    marks_data = await calc_marks(str(exam_id), str(attempt_id))
+
     report_doc = {
         "session_id": session_id,
         "attempt_id": attempt_id,
@@ -151,6 +200,12 @@ async def generate_report(session_id: str) -> Dict[str, Any]:
             ((session.get("ended_at") or datetime.utcnow()) - session["started_at"]).total_seconds() / 60, 1
         ) if session.get("started_at") else 0,
         "pdf_path": None,
+        # Marks / performance data
+        "marks_obtained": marks_data["marks_obtained"],
+        "marks_total": marks_data["marks_total"],
+        "questions_total": marks_data["questions_total"],
+        "questions_attempted": marks_data["questions_attempted"],
+        "correct_answers": marks_data["correct_answers"],
     }
 
     # Upsert report

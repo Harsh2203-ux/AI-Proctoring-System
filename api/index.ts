@@ -1004,7 +1004,6 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
 
   // ── Fetch report (generate on-the-fly if absent) ──────────────────────────
   // NOTE: email is in the `users` table, NOT in `student_profiles`.
-  // We LEFT JOIN users u to get u.email; sp only has full_name / student_id.
   const REPORT_SELECT_SQL = `
     SELECT pr.*,
            sp.full_name   AS student_name,
@@ -1024,6 +1023,15 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
     report = await queryOne<Record<string, unknown>>(REPORT_SELECT_SQL, [p.sessionId]) ?? generated;
   }
 
+  // ── Fetch marks live (always recompute from actual answers/questions) ──────
+  // Import calcMarks here to avoid a circular-import at module load time.
+  const { calcMarks } = await import('./_lib/report');
+  const attemptId = String(report.attempt_id || '');
+  const examId    = String(report.exam_id    || '');
+  const marks = attemptId && examId
+    ? await calcMarks(examId, attemptId).catch(() => null)
+    : null;
+
   // ── Safely parse JSON columns stored as text or objects ───────────────────
   const safeJson = (v: unknown): unknown => {
     if (v == null) return {};
@@ -1034,14 +1042,10 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   const fullTimeline     = safeJson(report.full_timeline) as Array<Record<string, unknown>>;
 
   // ── Sanitise text for safe embedding in a PDF string literal ─────────────
-  // PDF string literals use Latin-1 (WinAnsiEncoding).  Strip / replace any
-  // character outside the printable ASCII range (0x20–0x7E) and escape the
-  // three characters that are syntactically significant inside ( … ).
+  // Replace characters outside printable ASCII and escape PDF-special chars.
   const pdfStr = (raw: unknown): string =>
     String(raw ?? '')
-      // Replace any char outside printable ASCII with '?'
       .replace(/[^\x20-\x7E]/g, '?')
-      // Escape PDF-significant characters
       .replace(/\\/g, '\\\\')
       .replace(/\(/g, '\\(')
       .replace(/\)/g, '\\)');
@@ -1058,7 +1062,7 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   const generatedAt  = pdfStr(
     report.generated_at ? new Date(report.generated_at as string).toUTCString() : new Date().toUTCString()
   );
-  const sessionId    = p.sessionId;
+  const sessionId = p.sessionId;
 
   const totalViolations = Object.values(violationSummary).reduce((s, n) => s + (Number(n) || 0), 0);
 
@@ -1067,7 +1071,7 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
     .map(([k, v]) => pdfStr(`${k.replace(/_/g, ' ')}: ${v}`));
 
   const timelineLines: string[] = (Array.isArray(fullTimeline) ? fullTimeline : [])
-    .slice(0, 30)
+    .slice(0, 25)
     .map((item) => {
       const ts  = String(item.at || item.timestamp || '').split('T')[1]?.substring(0, 8) || '';
       const typ = String(item.type || item.event_type || '').replace(/_/g, ' ').toUpperCase();
@@ -1075,42 +1079,34 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
       return pdfStr(`${ts}  ${typ}${sev ? '  [' + sev + ']' : ''}`);
     });
 
-  // ── Minimal PDF 1.4 writer ────────────────────────────────────────────────
-  // We build the file as an array of lines joined by \n (LF), track byte
-  // offsets for the cross-reference table, and send the result as a Buffer.
-  //
-  // KEY RULES observed here:
-  //  1. Every `obj()` call captures the offset BEFORE its first line is
-  //     written, so the xref entry points at the "N 0 obj" keyword.
-  //  2. `emit(s)` appends `s + LF` to the output and advances byteOffset by
-  //     Buffer.byteLength(s + '\n', 'latin1').  We use latin1 because the
-  //     final Buffer is built with latin1 encoding so byte counts match exactly.
-  //  3. The content stream is built separately, its byte length measured with
-  //     the SAME encoding (latin1), then embedded via a single emit() so that
-  //     the << /Length >> value is always accurate.
-  //  4. We use latin1 encoding throughout (not utf-8) because all text has
-  //     already been sanitised to printable ASCII by pdfStr(), so latin1 and
-  //     utf-8 produce identical byte sequences for those characters.
+  // ── Performance values ────────────────────────────────────────────────────
+  const qTotal       = marks?.questions_total    ?? 0;
+  const qAttempted   = marks?.questions_attempted ?? 0;
+  const qCorrect     = marks?.correct_answers     ?? 0;
+  const mObtained    = marks?.marks_obtained      ?? 0;
+  const mTotal       = marks?.marks_total         ?? 0;
+  // Fallback display when marks data is unavailable (e.g. no questions added)
+  const hasMarks     = qTotal > 0;
 
+  // ── Minimal PDF 1.4 writer ────────────────────────────────────────────────
+  // All text is pre-sanitised to printable ASCII by pdfStr(), so latin1 and
+  // utf-8 produce identical byte sequences.  We use latin1 throughout so that
+  // Buffer.byteLength() counts match the final buffer exactly.
   const parts: string[] = [];
-  const objOffsets: number[] = []; // objOffsets[n] = byte offset of object n
-  let pos = 0;                     // running byte offset
+  const objOffsets: number[] = [];
+  let pos = 0;
 
   const emit = (line: string) => {
     const withNL = line + '\n';
     parts.push(withNL);
     pos += Buffer.byteLength(withNL, 'latin1');
   };
+  const beginObj = (id: number) => { objOffsets[id] = pos; emit(`${id} 0 obj`); };
+  const endObj   = () => emit('endobj');
 
-  const beginObj = (id: number) => {
-    objOffsets[id] = pos;
-    emit(`${id} 0 obj`);
-  };
-  const endObj = () => emit('endobj');
-
-  // ── PDF header ────────────────────────────────────────────────────────────
+  // ── PDF file header ───────────────────────────────────────────────────────
   emit('%PDF-1.4');
-  emit('%\xe2\xe3\xcf\xd3'); // four high bytes — flags file as binary
+  emit('%\xe2\xe3\xcf\xd3'); // binary-flag comment (4 high bytes)
 
   // ── Object 1: Document Catalog ────────────────────────────────────────────
   beginObj(1);
@@ -1122,110 +1118,173 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   emit('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
   endObj();
 
-  // ── Object 3: Page ────────────────────────────────────────────────────────
+  // ── Object 3: Page — two fonts: F1 (Helvetica) + F2 (Helvetica-Bold) ─────
   beginObj(3);
   emit('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842]');
-  emit('   /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+  emit('   /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>');
   endObj();
 
-  // ── Build content stream ──────────────────────────────────────────────────
-  type TItem = { x: number; y: number; size: number; text: string };
+  // ── Build content items ───────────────────────────────────────────────────
+  type TItem = {
+    x: number; y: number; size: number; text: string;
+    bold?: boolean; color?: [number, number, number];
+  };
   const items: TItem[] = [];
 
-  const PAGE_W  = 595;
-  const PAGE_H  = 842;
-  const ML      = 50;               // margin left
-  const TOP     = PAGE_H - 50;      // starting y
-  let   cy      = TOP;
+  const PAGE_W = 595;
+  const PAGE_H = 842;
+  const ML     = 50;            // left margin
+  const MR     = 545;           // right margin (PAGE_W - ML)
+  const TOP    = PAGE_H - 50;   // top of content area
+  let   cy     = TOP;
 
-  const addItem = (text: string, x: number, size: number) => {
-    items.push({ x, y: cy, size, text });
-    cy -= size + 4;
+  const addItem = (
+    text: string, x: number, size: number,
+    opts: { bold?: boolean; color?: [number, number, number] } = {}
+  ) => {
+    items.push({ x, y: cy, size, text, ...opts });
+    cy -= size + 5;
   };
-  const gap  = (n = 6) => { cy -= n; };
-  const head = (label: string) => { gap(); addItem(`-- ${label} --`, ML, 11); cy -= 4; };
+  const gap   = (n = 8)  => { cy -= n; };
+  const hline = ()        => { cy -= 4; };  // visual separator spacing
 
-  // Title block
-  addItem('AI Proctoring System - Exam Report', ML, 18);
-  addItem(`Generated: ${generatedAt}`, ML, 9);
-  addItem(`Session ID: ${pdfStr(sessionId)}`, ML, 9);
+  // ── Section header helper ─────────────────────────────────────────────────
+  // Rendered later as a filled rectangle + white bold label
+  type SectionHeader = { y: number; label: string };
+  const sectionHeaders: SectionHeader[] = [];
+  const head = (label: string) => {
+    gap(10);
+    sectionHeaders.push({ y: cy, label });
+    // Reserve space: section bar is 16pt tall, then 4pt gap before body
+    cy -= 20;
+  };
 
-  // Student
+  // ── Title / header block ──────────────────────────────────────────────────
+  // The header spans the full content width and is 56pt tall.
+  // Title sits at the top (size 16), meta text at the bottom (size 8).
+  const HDR_H  = 56;
+  const HDR_Y  = TOP - HDR_H;   // bottom-left y of header rectangle
+
+  // Title centred horizontally (approximate — PDF has no native centering
+  // without a CMap; we manually indent to visual centre for Helvetica-Bold 16)
+  // 'AI Proctoring System - Exam Report' ~= 30 chars × ~8.5px/char ≈ 255px wide
+  const titleText = 'AI Proctoring System - Exam Report';
+  const titleX = Math.round((PAGE_W - 255) / 2); // ≈ 170
+
+  items.push({ x: titleX, y: TOP - 22, size: 16, text: pdfStr(titleText), bold: true, color: [1, 1, 1] });
+  // Generated date
+  items.push({ x: ML,     y: HDR_Y + 10, size: 8, text: `Generated: ${generatedAt}`, color: [0.78, 0.87, 0.96] });
+  // Session ID (right-aligned approximation)
+  const sessionLabel = pdfStr(`Session: ${sessionId}`);
+  // ~sessionLabel.length * 4.5 wide for size-8 Helvetica
+  const sessionX = Math.max(ML, Math.round(MR - sessionLabel.length * 4.5));
+  items.push({ x: sessionX, y: HDR_Y + 10, size: 8, text: sessionLabel, color: [0.78, 0.87, 0.96] });
+  cy = HDR_Y - 14; // leave space below header before first section
+
+  // ── Student Information ───────────────────────────────────────────────────
   head('Student Information');
   addItem(`Name:   ${studentName}`,  ML + 10, 10);
   addItem(`Email:  ${studentEmail}`, ML + 10, 10);
 
-  // Exam
+  // ── Exam Information ──────────────────────────────────────────────────────
   head('Exam Information');
   addItem(`Exam:   ${examTitle}`, ML + 10, 10);
 
-  // Risk
+  // ── Performance Summary ───────────────────────────────────────────────────
+  head('Performance Summary');
+  if (hasMarks) {
+    addItem(`Marks Obtained:      ${mObtained} / ${mTotal}`,         ML + 10, 10, { bold: true });
+    addItem(`Questions Attempted: ${qAttempted} / ${qTotal}`,        ML + 10, 10);
+    addItem(`Correct Answers:     ${qCorrect} / ${qTotal}`,          ML + 10, 10);
+  } else {
+    addItem('Marks Obtained:      N/A (no questions added to exam)', ML + 10, 10);
+  }
+
+  // ── Risk Assessment ───────────────────────────────────────────────────────
   head('Risk Assessment');
-  addItem(`Risk Score:       ${riskScore} / 100`,          ML + 10, 10);
-  addItem(`Risk Level:       ${riskLevel}`,                ML + 10, 10);
-  addItem(`Warnings:         ${warnings}`,                 ML + 10, 10);
-  addItem(`Total Violations: ${totalViolations}`,          ML + 10, 10);
-  addItem(`Status:           ${status}`,                   ML + 10, 10);
+  addItem(`Risk Score:       ${riskScore} / 100`,             ML + 10, 10);
+  addItem(`Risk Level:       ${riskLevel}`,                   ML + 10, 10);
+  addItem(`Warnings:         ${warnings}`,                    ML + 10, 10);
+  addItem(`Total Violations: ${totalViolations}`,             ML + 10, 10);
+  addItem(`Status:           ${status}`,                      ML + 10, 10);
   addItem(`Disqualified:     ${disqualified ? 'YES' : 'NO'}`, ML + 10, 10);
 
-  // Violations
+  // ── Violation Breakdown ───────────────────────────────────────────────────
   if (violationLines.length > 0) {
     head('Violation Breakdown');
-    for (const vl of violationLines) { if (cy > 60) addItem(vl, ML + 10, 9); }
+    for (const vl of violationLines) { if (cy > 80) addItem(vl, ML + 10, 9); }
   }
 
-  // Timeline
+  // ── Event Timeline ────────────────────────────────────────────────────────
   if (timelineLines.length > 0) {
     head('Event Timeline');
-    for (const tl of timelineLines) { if (cy > 60) addItem(tl, ML + 10, 8); }
+    for (const tl of timelineLines) { if (cy > 80) addItem(tl, ML + 10, 8); }
   }
 
-  // Build the PDF graphics/text operators
+  // ── Footer ────────────────────────────────────────────────────────────────
+  gap(12);
+  hline();
+  addItem('Generated by AI Proctoring System', ML, 8, { color: [0.5, 0.5, 0.5] });
+
+  // ── Build PDF content stream operators ───────────────────────────────────
   const ops: string[] = [];
 
-  // Header background rectangle
-  ops.push(`0.12 0.16 0.25 rg`);
-  ops.push(`${ML - 5} ${TOP - 34} ${PAGE_W - ML * 2 + 10} 42 re f`);
+  // 1. Dark-blue header rectangle
+  const HDR_BG_R = 0.12, HDR_BG_G = 0.16, HDR_BG_B = 0.25;
+  ops.push(`${HDR_BG_R} ${HDR_BG_G} ${HDR_BG_B} rg`);
+  ops.push(`${ML - 5} ${HDR_Y} ${PAGE_W - (ML - 5) * 2} ${HDR_H} re f`);
 
-  for (const it of items) {
-    const isTitle = it.size >= 18;
-    // colour: white for title, medium-grey for section heads, dark for body
-    const [r, g, b] = isTitle ? [1, 1, 1]
-                    : it.size >= 11 ? [0.6, 0.75, 0.9]
-                    : [0.1, 0.1, 0.1];
-    ops.push(`BT /F1 ${it.size} Tf ${r} ${g} ${b} rg ${it.x} ${it.y} Td (${it.text}) Tj ET`);
+  // 2. Section-header bars (navy blue)
+  ops.push(`0.12 0.22 0.40 rg`);
+  for (const sh of sectionHeaders) {
+    ops.push(`${ML - 5} ${sh.y - 14} ${PAGE_W - (ML - 5) * 2} 18 re f`);
+  }
+  // Section header text (white, bold F2)
+  for (const sh of sectionHeaders) {
+    ops.push(`BT /F2 10 Tf 1 1 1 rg ${ML + 2} ${sh.y - 10} Td (${pdfStr(sh.label)}) Tj ET`);
   }
 
-  // The stream body must be emitted exactly as the PDF /Length says.
-  // emit() always appends '\n', so we measure streamContent + '\n' to match.
-  const streamBody    = ops.join('\n') + '\n';
-  const streamLen     = Buffer.byteLength(streamBody, 'latin1');
+  // 3. Horizontal rule before footer (thin dark line)
+  const ruleY = Math.max(cy + 14, 70);
+  ops.push(`0.7 0.7 0.7 RG 0.5 w ${ML - 5} ${ruleY} m ${MR + 5} ${ruleY} l S`);
 
-  // ── Object 4: Content stream ──────────────────────────────────────────────
+  // 4. Text items
+  for (const it of items) {
+    const [r, g, b] = it.color ?? [0.1, 0.1, 0.1];
+    const font = it.bold ? 'F2' : 'F1';
+    ops.push(`BT /${font} ${it.size} Tf ${r} ${g} ${b} rg ${it.x} ${it.y} Td (${it.text}) Tj ET`);
+  }
+
+  // ── Assemble stream + objects ─────────────────────────────────────────────
+  const streamBody = ops.join('\n') + '\n';
+  const streamLen  = Buffer.byteLength(streamBody, 'latin1');
+
+  // Object 4: Content stream
   beginObj(4);
   emit(`<< /Length ${streamLen} >>`);
-  // "stream" keyword must be followed by exactly one newline before the data
-  // (PDF spec §7.3.8.1).  emit() adds that newline for us.
   emit('stream');
-  // Append stream body directly (it already ends with '\n') and update pos.
   parts.push(streamBody);
   pos += streamLen;
   emit('endstream');
   endObj();
 
-  // ── Object 5: Font ────────────────────────────────────────────────────────
+  // Object 5: Helvetica (regular)
   beginObj(5);
-  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica');
-  emit('   /Encoding /WinAnsiEncoding >>');
+  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  endObj();
+
+  // Object 6: Helvetica-Bold
+  beginObj(6);
+  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   endObj();
 
   // ── Cross-reference table ─────────────────────────────────────────────────
-  const xrefPos = pos;
-  const objCount = Math.max(...Object.keys(objOffsets).map(Number)) + 1; // highest obj id + 1
+  const xrefPos  = pos;
+  const objCount = Math.max(...Object.keys(objOffsets).map(Number)) + 1;
 
   emit('xref');
   emit(`0 ${objCount}`);
-  emit('0000000000 65535 f ');   // free-list head (object 0)
+  emit('0000000000 65535 f ');
   for (let i = 1; i < objCount; i++) {
     emit(`${String(objOffsets[i] ?? 0).padStart(10, '0')} 00000 n `);
   }
@@ -1244,8 +1303,6 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
   res.setHeader('Cache-Control', 'no-store');
-  // Use Vercel's res.send() — it correctly serialises a Buffer, sets
-  // Content-Length, and flushes the response in both dev and production.
   res.status(200).send(pdfBuffer);
 });
 

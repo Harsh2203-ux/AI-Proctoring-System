@@ -389,6 +389,18 @@ async def get_report_download(session_id: str, current_user=Depends(require_admi
     if "_id" in report:
         report["_id"] = str(report["_id"])
 
+    # Always recompute marks live from actual answers so the PDF is up-to-date
+    # even for old reports that were generated before marks tracking was added.
+    from app.services.report_service import calc_marks
+    exam_id   = str(report.get("exam_id")   or "")
+    attempt_id = str(report.get("attempt_id") or "")
+    if exam_id and attempt_id:
+        try:
+            marks_data = await calc_marks(exam_id, attempt_id)
+            report.update(marks_data)
+        except Exception as exc:
+            logger.warning(f"Marks calculation failed for session {session_id}: {exc}")
+
     # Generate PDF bytes in-memory using reportlab
     try:
         pdf_bytes = _build_pdf_bytes(report, session_id)
@@ -422,37 +434,31 @@ def _build_pdf_bytes(report: dict, session_id: str) -> bytes:
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=18, spaceAfter=6)
-    h2_style = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=13, spaceBefore=12, spaceAfter=4)
+    # ── Styles ────────────────────────────────────────────────────────────────
+    title_style = ParagraphStyle(
+        "rpt_title", parent=styles["Title"],
+        fontSize=18, spaceAfter=6,
+        textColor=colors.HexColor("#1E3A5F"),
+    )
+    h2_style = ParagraphStyle(
+        "rpt_h2", parent=styles["Heading2"],
+        fontSize=12, spaceBefore=14, spaceAfter=4,
+        textColor=colors.HexColor("#1E3A5F"),
+        borderPad=4,
+        backColor=colors.HexColor("#1E3A5F"),
+    )
+    h2_white = ParagraphStyle(
+        "rpt_h2w", parent=h2_style,
+        textColor=colors.white,
+    )
     normal = styles["Normal"]
+    bold_normal = ParagraphStyle(
+        "rpt_bold", parent=normal, fontName="Helvetica-Bold",
+    )
 
+    # ── Header ────────────────────────────────────────────────────────────────
     story.append(Paragraph("AI Proctoring System — Examination Report", title_style))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
-    story.append(Spacer(1, 0.3 * cm))
-
-    # Student info
-    story.append(Paragraph("Student Information", h2_style))
-    si = report.get("student_info") or {}
-    story.append(Paragraph(f"<b>Name:</b> {si.get('full_name') or report.get('student_name') or 'N/A'}", normal))
-    story.append(Paragraph(f"<b>Student ID:</b> {si.get('student_id') or 'N/A'}", normal))
-    story.append(Paragraph(f"<b>Email:</b> {si.get('email') or report.get('student_email') or 'N/A'}", normal))
-    story.append(Spacer(1, 0.2 * cm))
-
-    # Exam info
-    story.append(Paragraph("Examination Information", h2_style))
-    ei = report.get("exam_info") or {}
-    story.append(Paragraph(f"<b>Exam:</b> {ei.get('title') or report.get('exam_title') or 'N/A'}", normal))
-    story.append(Paragraph(f"<b>Duration:</b> {ei.get('duration_minutes') or report.get('duration_minutes') or 0} minutes", normal))
-    story.append(Paragraph(f"<b>Session ID:</b> {session_id}", normal))
-    story.append(Spacer(1, 0.2 * cm))
-
-    # Risk / summary
-    story.append(Paragraph("Proctoring Summary", h2_style))
-    risk_score = report.get("risk_score") or 0
-    risk_level = str(report.get("risk_level") or "low").upper()
-    identity = report.get("identity_result") or {}
-    vs = report.get("violation_summary") or {}
-    total_violations = vs.get("total") or (len(report.get("violations") or []))
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#1E3A5F")))
 
     gen_at = report.get("generated_at")
     if isinstance(gen_at, datetime):
@@ -460,35 +466,100 @@ def _build_pdf_bytes(report: dict, session_id: str) -> bytes:
     else:
         gen_str = str(gen_at or datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
 
+    meta_data = [
+        [Paragraph(f"<b>Generated At:</b> {gen_str}", normal),
+         Paragraph(f"<b>Session ID:</b> {session_id}", normal)],
+    ]
+    meta_t = Table(meta_data, colWidths=[9 * cm, 8 * cm])
+    meta_t.setStyle(TableStyle([("PADDING", (0, 0), (-1, -1), 4)]))
+    story.append(meta_t)
+    story.append(Spacer(1, 0.3 * cm))
+
+    # ── Student Information ───────────────────────────────────────────────────
+    story.append(Paragraph("Student Information", h2_white))
+    si = report.get("student_info") or {}
+    story.append(Paragraph(f"<b>Name:</b>   {si.get('full_name') or report.get('student_name') or 'N/A'}", normal))
+    story.append(Paragraph(f"<b>Email:</b>  {si.get('email') or report.get('student_email') or 'N/A'}", normal))
+    story.append(Spacer(1, 0.15 * cm))
+
+    # ── Examination Information ───────────────────────────────────────────────
+    story.append(Paragraph("Examination Information", h2_white))
+    ei = report.get("exam_info") or {}
+    story.append(Paragraph(f"<b>Exam:</b>     {ei.get('title') or report.get('exam_title') or 'N/A'}", normal))
+    story.append(Paragraph(f"<b>Duration:</b> {ei.get('duration_minutes') or report.get('duration_minutes') or 0} minutes", normal))
+    story.append(Spacer(1, 0.15 * cm))
+
+    # ── Performance Summary ───────────────────────────────────────────────────
+    story.append(Paragraph("Performance Summary", h2_white))
+    q_total     = int(report.get("questions_total")    or 0)
+    q_attempted = int(report.get("questions_attempted") or 0)
+    q_correct   = int(report.get("correct_answers")    or 0)
+    m_obtained  = report.get("marks_obtained") or 0
+    m_total     = report.get("marks_total")    or 0
+
+    if q_total > 0:
+        perf_data = [
+            ["Metric", "Value"],
+            ["Marks Obtained",      f"{m_obtained} / {m_total}"],
+            ["Questions Attempted", f"{q_attempted} / {q_total}"],
+            ["Correct Answers",     f"{q_correct} / {q_total}"],
+        ]
+        pt = Table(perf_data, colWidths=[8 * cm, 8 * cm])
+        pt.setStyle(TableStyle([
+            ("BACKGROUND",  (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
+            ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",    (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME",    (0, 1), (0, 1),  "Helvetica-Bold"),  # "Marks Obtained" label bold
+            ("GRID",        (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F0F4F8")]),
+            ("PADDING",     (0, 0), (-1, -1), 6),
+        ]))
+        story.append(pt)
+    else:
+        story.append(Paragraph("N/A — no questions have been added to this exam.", normal))
+    story.append(Spacer(1, 0.15 * cm))
+
+    # ── Risk Assessment ───────────────────────────────────────────────────────
+    story.append(Paragraph("Risk Assessment", h2_white))
+    risk_score = report.get("risk_score") or 0
+    risk_level = str(report.get("risk_level") or "low").upper()
+    identity   = report.get("identity_result") or {}
+    vs         = report.get("violation_summary") or {}
+    if isinstance(vs, dict):
+        total_violations = vs.get("total") or sum(
+            v for k, v in vs.items() if isinstance(v, int) and k != "total"
+        ) or len(report.get("violations") or [])
+    else:
+        total_violations = len(report.get("violations") or [])
+
     summary_data = [
         ["Metric", "Value"],
-        ["Generated At", gen_str],
+        ["Risk Score",        f"{risk_score} / 100"],
+        ["Risk Level",        risk_level],
+        ["Total Violations",  str(total_violations)],
+        ["Warnings Issued",   str(report.get("warning_count") or 0)],
+        ["Disqualified",      "YES" if report.get("disqualification_status") else "NO"],
+        ["Submission Status", str(report.get("submission_status") or "N/A").upper()],
         ["Identity Verified", "YES" if identity.get("verified") else "NO"],
         ["Identity Confidence", f"{float(identity.get('confidence') or 0) * 100:.1f}%"],
-        ["Total Violations", str(total_violations)],
-        ["Warnings Issued", str(report.get("warning_count") or 0)],
-        ["Disqualified", "YES" if report.get("disqualification_status") else "NO"],
-        ["Risk Score", f"{risk_score}/100"],
-        ["Risk Level", risk_level],
-        ["Submission Status", str(report.get("submission_status") or "N/A").upper()],
     ]
 
     t = Table(summary_data, colWidths=[8 * cm, 8 * cm])
     t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND",     (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
+        ("TEXTCOLOR",      (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",       (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID",           (0, 0), (-1, -1), 0.5, colors.grey),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F0F4F8")]),
-        ("PADDING", (0, 0), (-1, -1), 6),
+        ("PADDING",        (0, 0), (-1, -1), 6),
     ]))
     story.append(t)
     story.append(Spacer(1, 0.3 * cm))
 
-    # Violations table
+    # ── Violations Detected ───────────────────────────────────────────────────
     violations = report.get("violations") or []
     if violations:
-        story.append(Paragraph("Violations Detected", h2_style))
+        story.append(Paragraph("Violations Detected", h2_white))
         vdata = [["#", "Type", "Severity", "Confidence", "Timestamp"]]
         for i, v in enumerate(violations[:30], 1):
             ts = v.get("timestamp") or v.get("created_at") or ""
@@ -505,22 +576,22 @@ def _build_pdf_bytes(report: dict, session_id: str) -> bytes:
             ])
         vt = Table(vdata, colWidths=[1 * cm, 5 * cm, 3 * cm, 3 * cm, 4 * cm])
         vt.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("BACKGROUND",     (0, 0), (-1, 0), colors.HexColor("#2563EB")),
+            ("TEXTCOLOR",      (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",       (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID",           (0, 0), (-1, -1), 0.5, colors.lightgrey),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EFF6FF")]),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("PADDING", (0, 0), (-1, -1), 4),
+            ("FONTSIZE",       (0, 0), (-1, -1), 8),
+            ("PADDING",        (0, 0), (-1, -1), 4),
         ]))
         story.append(vt)
         story.append(Spacer(1, 0.3 * cm))
 
-    # Footer
+    # ── Footer ────────────────────────────────────────────────────────────────
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
     story.append(Paragraph(
         f"Generated by AI Proctoring System on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-        ParagraphStyle("footer", parent=normal, fontSize=8, textColor=colors.grey, alignment=TA_CENTER),
+        ParagraphStyle("rpt_footer", parent=normal, fontSize=8, textColor=colors.grey, alignment=TA_CENTER),
     ))
 
     doc.build(story)
