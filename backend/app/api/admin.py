@@ -5,6 +5,7 @@ from app.db.connection import get_db
 from bson import ObjectId
 from datetime import datetime, timedelta
 from typing import Optional
+import io
 import os
 import logging
 
@@ -367,23 +368,163 @@ async def get_report(session_id: str, current_user=Depends(require_admin)):
 
 @router.get("/reports/{session_id}/pdf")
 async def get_report_pdf(session_id: str, current_user=Depends(require_admin)):
+    """Legacy endpoint — delegates to /download for backward compatibility."""
+    return await get_report_download(session_id, current_user)
+
+
+@router.get("/reports/{session_id}/download")
+async def get_report_download(session_id: str, current_user=Depends(require_admin)):
+    """Generate and stream a proctoring report PDF entirely in-memory."""
     db = get_db()
+
+    # Fetch or generate the report document
     report = await db.proctoring_reports.find_one({"session_id": session_id})
     if not report:
         from app.services.report_service import generate_report
         report = await generate_report(session_id)
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
 
-    pdf_path = report.get("pdf_path") if report else None
-    if not pdf_path or not os.path.exists(pdf_path):
-        raise HTTPException(status_code=404, detail="PDF not available")
+    # Normalise _id
+    if "_id" in report:
+        report["_id"] = str(report["_id"])
 
-    with open(pdf_path, "rb") as f:
-        content = f.read()
+    # Generate PDF bytes in-memory using reportlab
+    try:
+        pdf_bytes = _build_pdf_bytes(report, session_id)
+    except Exception as exc:
+        logger.error(f"In-memory PDF generation failed for session {session_id}: {exc}")
+        raise HTTPException(status_code=500, detail="PDF generation failed")
+
+    safe_id = session_id.replace("/", "_").replace("\\", "_")
     return Response(
-        content=content,
+        content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=report_{session_id}.pdf"}
+        headers={
+            "Content-Disposition": f'attachment; filename="report_{safe_id}.pdf"',
+            "Cache-Control": "no-store",
+        },
     )
+
+
+def _build_pdf_bytes(report: dict, session_id: str) -> bytes:
+    """Build a PDF from *report* entirely in-memory and return the raw bytes."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.enums import TA_CENTER
+    from datetime import datetime
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=18, spaceAfter=6)
+    h2_style = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=13, spaceBefore=12, spaceAfter=4)
+    normal = styles["Normal"]
+
+    story.append(Paragraph("AI Proctoring System — Examination Report", title_style))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+    story.append(Spacer(1, 0.3 * cm))
+
+    # Student info
+    story.append(Paragraph("Student Information", h2_style))
+    si = report.get("student_info") or {}
+    story.append(Paragraph(f"<b>Name:</b> {si.get('full_name') or report.get('student_name') or 'N/A'}", normal))
+    story.append(Paragraph(f"<b>Student ID:</b> {si.get('student_id') or 'N/A'}", normal))
+    story.append(Paragraph(f"<b>Email:</b> {si.get('email') or report.get('student_email') or 'N/A'}", normal))
+    story.append(Spacer(1, 0.2 * cm))
+
+    # Exam info
+    story.append(Paragraph("Examination Information", h2_style))
+    ei = report.get("exam_info") or {}
+    story.append(Paragraph(f"<b>Exam:</b> {ei.get('title') or report.get('exam_title') or 'N/A'}", normal))
+    story.append(Paragraph(f"<b>Duration:</b> {ei.get('duration_minutes') or report.get('duration_minutes') or 0} minutes", normal))
+    story.append(Paragraph(f"<b>Session ID:</b> {session_id}", normal))
+    story.append(Spacer(1, 0.2 * cm))
+
+    # Risk / summary
+    story.append(Paragraph("Proctoring Summary", h2_style))
+    risk_score = report.get("risk_score") or 0
+    risk_level = str(report.get("risk_level") or "low").upper()
+    identity = report.get("identity_result") or {}
+    vs = report.get("violation_summary") or {}
+    total_violations = vs.get("total") or (len(report.get("violations") or []))
+
+    gen_at = report.get("generated_at")
+    if isinstance(gen_at, datetime):
+        gen_str = gen_at.strftime("%Y-%m-%d %H:%M UTC")
+    else:
+        gen_str = str(gen_at or datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+
+    summary_data = [
+        ["Metric", "Value"],
+        ["Generated At", gen_str],
+        ["Identity Verified", "YES" if identity.get("verified") else "NO"],
+        ["Identity Confidence", f"{float(identity.get('confidence') or 0) * 100:.1f}%"],
+        ["Total Violations", str(total_violations)],
+        ["Warnings Issued", str(report.get("warning_count") or 0)],
+        ["Disqualified", "YES" if report.get("disqualification_status") else "NO"],
+        ["Risk Score", f"{risk_score}/100"],
+        ["Risk Level", risk_level],
+        ["Submission Status", str(report.get("submission_status") or "N/A").upper()],
+    ]
+
+    t = Table(summary_data, colWidths=[8 * cm, 8 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F0F4F8")]),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 0.3 * cm))
+
+    # Violations table
+    violations = report.get("violations") or []
+    if violations:
+        story.append(Paragraph("Violations Detected", h2_style))
+        vdata = [["#", "Type", "Severity", "Confidence", "Timestamp"]]
+        for i, v in enumerate(violations[:30], 1):
+            ts = v.get("timestamp") or v.get("created_at") or ""
+            if hasattr(ts, "strftime"):
+                ts = ts.strftime("%H:%M:%S")
+            elif isinstance(ts, str) and "T" in ts:
+                ts = ts.split("T")[1][:8]
+            vdata.append([
+                str(i),
+                str(v.get("violation_type") or "").replace("_", " ").title(),
+                str(v.get("severity") or "").upper(),
+                f"{float(v.get('confidence') or 0) * 100:.0f}%",
+                str(ts),
+            ])
+        vt = Table(vdata, colWidths=[1 * cm, 5 * cm, 3 * cm, 3 * cm, 4 * cm])
+        vt.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EFF6FF")]),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("PADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(vt)
+        story.append(Spacer(1, 0.3 * cm))
+
+    # Footer
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+    story.append(Paragraph(
+        f"Generated by AI Proctoring System on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+        ParagraphStyle("footer", parent=normal, fontSize=8, textColor=colors.grey, alignment=TA_CENTER),
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
 
 
 # ---- Admin user management ----

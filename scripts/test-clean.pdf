@@ -1,0 +1,51 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842]
+   /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1112 >>
+stream
+0.12 0.16 0.25 rg
+45 758 505 42 re f
+BT /F1 18 Tf 1 1 1 rg 50 792 Td (AI Proctoring System - Exam Report) Tj ET
+BT /F1 9 Tf 0.1 0.1 0.1 rg 50 770 Td (Generated: Fri, 11 Sep 2026 13:25:54 GMT) Tj ET
+BT /F1 9 Tf 0.1 0.1 0.1 rg 50 757 Td (Session ID: test-session-clean-001) Tj ET
+BT /F1 11 Tf 0.6 0.75 0.9 rg 50 738 Td (-- Student Information --) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 719 Td (Name:   Alice Smith) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 705 Td (Email:  alice@example.com) Tj ET
+BT /F1 11 Tf 0.6 0.75 0.9 rg 50 685 Td (-- Exam Information --) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 666 Td (Exam:   Demo Examination) Tj ET
+BT /F1 11 Tf 0.6 0.75 0.9 rg 50 646 Td (-- Risk Assessment --) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 627 Td (Risk Score:       0 / 100) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 613 Td (Risk Level:       LOW) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 599 Td (Warnings:         0) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 585 Td (Total Violations: 0) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 571 Td (Status:           SUBMITTED) Tj ET
+BT /F1 10 Tf 0.1 0.1 0.1 rg 60 557 Td (Disqualified:     NO) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica
+   /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000250 00000 n 
+0000001413 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1513
+%%EOF

@@ -21,7 +21,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 
 // ── shared db / lib ──────────────────────────────────────────────────────────
-import { query, queryOne } from './db/client';
+import { query, queryOne, getPool } from './db/client';
 import { ensureDb } from './db/init';
 import {
   requireAuth, requireAdmin, requireStudent,
@@ -304,10 +304,69 @@ addRoute('exams/:examId', async (req, res, p) => {
   if (req.method === 'DELETE') {
     const admin = requireAdmin(req, res);
     if (!admin) return;
-    const exam = await queryOne<{ status: string }>('SELECT status FROM exams WHERE id = $1', [examId]);
+    const exam = await queryOne<{ status: string; title: string }>(
+      'SELECT status, title FROM exams WHERE id = $1', [examId]
+    );
     if (!exam) return void res.status(404).json({ detail: 'Exam not found' });
-    if (exam.status !== 'draft') return void res.status(400).json({ detail: 'Only draft exams can be deleted' });
-    await query('DELETE FROM exams WHERE id = $1', [examId]);
+
+    // Perform a full cascading delete inside a transaction.
+    // The schema does not declare ON DELETE CASCADE for every foreign key that
+    // references exams (exam_attempts, violations, disqualifications,
+    // proctoring_reports), so we delete dependent rows in the correct order
+    // before removing the exam itself.
+    const pool   = getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1. Collect all session IDs for this exam (needed for violations/events)
+      const sessionRows = await client.query<{ id: string }>(
+        'SELECT id FROM proctoring_sessions WHERE exam_id = $1', [examId]
+      );
+      const sessionIds = sessionRows.rows.map(r => r.id);
+
+      // 2. Delete disqualifications (FK → exams, sessions)
+      await client.query('DELETE FROM disqualifications WHERE exam_id = $1', [examId]);
+
+      // 3. Delete proctoring_reports (FK → exams)
+      await client.query('DELETE FROM proctoring_reports WHERE exam_id = $1', [examId]);
+
+      // 4. Delete violations (FK → exams; cascade would handle sessions but
+      //    violations also FK → exams directly, so delete explicitly)
+      await client.query('DELETE FROM violations WHERE exam_id = $1', [examId]);
+
+      // 5. Delete evidence tied to these sessions (FK → sessions, no cascade)
+      if (sessionIds.length > 0) {
+        await client.query(
+          'DELETE FROM evidence WHERE session_id = ANY($1::uuid[])', [sessionIds]
+        );
+      }
+
+      // 6. Delete proctoring_events (FK → sessions ON DELETE CASCADE — but
+      //    sessions aren't deleted yet, so delete events explicitly first)
+      if (sessionIds.length > 0) {
+        await client.query(
+          'DELETE FROM proctoring_events WHERE session_id = ANY($1::uuid[])', [sessionIds]
+        );
+      }
+
+      // 7. Delete proctoring_sessions (FK → exam_attempts ON DELETE CASCADE)
+      await client.query('DELETE FROM proctoring_sessions WHERE exam_id = $1', [examId]);
+
+      // 8. Delete exam_attempts (no cascade from exams; answers cascade from attempts)
+      await client.query('DELETE FROM exam_attempts WHERE exam_id = $1', [examId]);
+
+      // 9. Delete the exam itself (questions cascade via ON DELETE CASCADE)
+      await client.query('DELETE FROM exams WHERE id = $1', [examId]);
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {/* ignore rollback error */});
+      throw err; // re-throw — caught by the global handler → 500
+    } finally {
+      client.release();
+    }
+
     return void res.status(200).json({ message: 'Exam deleted' });
   }
   res.status(405).json({ detail: 'Method not allowed' });
@@ -937,13 +996,13 @@ addRoute('admin/reports/:sessionId', async (req, res, p) => {
 
 // ── GET /api/admin/reports/:sessionId/download ────────────────────────────────
 // Returns a PDF file for the proctoring report of the given session.
-// Uses a pure-Node.js minimal PDF writer — no external dependencies required.
+// Pure-Node.js PDF 1.4 writer — zero external dependencies, Vercel-compatible.
 addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   if (req.method !== 'GET') return void res.status(405).json({ detail: 'Method not allowed' });
   const admin = requireAdmin(req, res);
   if (!admin) return;
 
-  // Fetch report (generate on-the-fly if missing)
+  // ── Fetch report (generate on-the-fly if absent) ──────────────────────────
   let report = await queryOne<Record<string, unknown>>(
     `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
             e.title AS exam_title, e.duration_minutes
@@ -955,7 +1014,6 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
   if (!report) {
     const generated = await generateReport(p.sessionId);
     if (!generated) return void res.status(404).json({ detail: 'Report not found' });
-    // Re-fetch so we have the joined student/exam fields
     report = await queryOne<Record<string, unknown>>(
       `SELECT pr.*, sp.full_name AS student_name, sp.email AS student_email,
               e.title AS exam_title, e.duration_minutes
@@ -966,188 +1024,229 @@ addRoute('admin/reports/:sessionId/download', async (req, res, p) => {
     ) ?? generated;
   }
 
-  // ── Parse stored JSON columns ─────────────────────────────────────────────
+  // ── Safely parse JSON columns stored as text or objects ───────────────────
   const safeJson = (v: unknown): unknown => {
-    if (v === null || v === undefined) return {};
+    if (v == null) return {};
     if (typeof v === 'object') return v;
     try { return JSON.parse(v as string); } catch { return {}; }
   };
   const violationSummary = safeJson(report.violation_summary) as Record<string, number>;
   const fullTimeline     = safeJson(report.full_timeline) as Array<Record<string, unknown>>;
 
-  // ── Build human-readable strings ──────────────────────────────────────────
-  const studentName  = String(report.student_name  || report.student_id || 'Unknown');
-  const studentEmail = String(report.student_email || '');
-  const examTitle    = String(report.exam_title    || report.exam_id    || 'Unknown');
+  // ── Sanitise text for safe embedding in a PDF string literal ─────────────
+  // PDF string literals use Latin-1 (WinAnsiEncoding).  Strip / replace any
+  // character outside the printable ASCII range (0x20–0x7E) and escape the
+  // three characters that are syntactically significant inside ( … ).
+  const pdfStr = (raw: unknown): string =>
+    String(raw ?? '')
+      // Replace any char outside printable ASCII with '?'
+      .replace(/[^\x20-\x7E]/g, '?')
+      // Escape PDF-significant characters
+      .replace(/\\/g, '\\\\')
+      .replace(/\(/g, '\\(')
+      .replace(/\)/g, '\\)');
+
+  // ── Build field values ────────────────────────────────────────────────────
+  const studentName  = pdfStr(report.student_name  || report.student_id  || 'Unknown');
+  const studentEmail = pdfStr(report.student_email || '');
+  const examTitle    = pdfStr(report.exam_title    || report.exam_id     || 'Unknown');
   const riskScore    = Number(report.risk_score)   || 0;
-  const riskLevel    = String(report.risk_level    || 'low').toUpperCase();
+  const riskLevel    = pdfStr(String(report.risk_level || 'low').toUpperCase());
   const warnings     = Number(report.warning_count) || 0;
   const disqualified = Boolean(report.disqualification_status);
-  const status       = String(report.submission_status || 'unknown');
-  const generatedAt  = report.generated_at ? new Date(report.generated_at as string).toUTCString() : new Date().toUTCString();
+  const status       = pdfStr(String(report.submission_status || 'unknown').toUpperCase());
+  const generatedAt  = pdfStr(
+    report.generated_at ? new Date(report.generated_at as string).toUTCString() : new Date().toUTCString()
+  );
   const sessionId    = p.sessionId;
 
-  const totalViolations = Object.values(violationSummary).reduce((s, n) => s + n, 0);
+  const totalViolations = Object.values(violationSummary).reduce((s, n) => s + (Number(n) || 0), 0);
 
-  // Violation breakdown lines (at most 20)
   const violationLines: string[] = Object.entries(violationSummary)
     .slice(0, 20)
-    .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
+    .map(([k, v]) => pdfStr(`${k.replace(/_/g, ' ')}: ${v}`));
 
-  // Timeline lines (at most 30)
   const timelineLines: string[] = (Array.isArray(fullTimeline) ? fullTimeline : [])
     .slice(0, 30)
     .map((item) => {
       const ts  = String(item.at || item.timestamp || '').split('T')[1]?.substring(0, 8) || '';
       const typ = String(item.type || item.event_type || '').replace(/_/g, ' ').toUpperCase();
       const sev = String(item.severity || '');
-      return `${ts}  ${typ}  ${sev ? '[' + sev + ']' : ''}`.trim();
+      return pdfStr(`${ts}  ${typ}${sev ? '  [' + sev + ']' : ''}`);
     });
 
-  // ── Minimal PDF writer ────────────────────────────────────────────────────
-  // Generates a valid, readable PDF 1.4 document using only string buffers.
-  // No binary fonts — uses built-in PDF Helvetica (Latin subset).
-  const pdfLines: string[] = [];
-  const offsets: number[] = [];
-  let byteOffset = 0;
+  // ── Minimal PDF 1.4 writer ────────────────────────────────────────────────
+  // We build the file as an array of lines joined by \n (LF), track byte
+  // offsets for the cross-reference table, and send the result as a Buffer.
+  //
+  // KEY RULES observed here:
+  //  1. Every `obj()` call captures the offset BEFORE its first line is
+  //     written, so the xref entry points at the "N 0 obj" keyword.
+  //  2. `emit(s)` appends `s + LF` to the output and advances byteOffset by
+  //     Buffer.byteLength(s + '\n', 'latin1').  We use latin1 because the
+  //     final Buffer is built with latin1 encoding so byte counts match exactly.
+  //  3. The content stream is built separately, its byte length measured with
+  //     the SAME encoding (latin1), then embedded via a single emit() so that
+  //     the << /Length >> value is always accurate.
+  //  4. We use latin1 encoding throughout (not utf-8) because all text has
+  //     already been sanitised to printable ASCII by pdfStr(), so latin1 and
+  //     utf-8 produce identical byte sequences for those characters.
 
-  const emit = (s: string) => { pdfLines.push(s); byteOffset += Buffer.byteLength(s + '\n', 'utf8'); };
-  const obj  = (id: number, content: string) => {
-    offsets[id] = byteOffset;
+  const parts: string[] = [];
+  const objOffsets: number[] = []; // objOffsets[n] = byte offset of object n
+  let pos = 0;                     // running byte offset
+
+  const emit = (line: string) => {
+    const withNL = line + '\n';
+    parts.push(withNL);
+    pos += Buffer.byteLength(withNL, 'latin1');
+  };
+
+  const beginObj = (id: number) => {
+    objOffsets[id] = pos;
     emit(`${id} 0 obj`);
-    emit(content);
-    emit('endobj');
   };
+  const endObj = () => emit('endobj');
 
-  // PDF header
+  // ── PDF header ────────────────────────────────────────────────────────────
   emit('%PDF-1.4');
-  emit('%\xE2\xE3\xCF\xD3'); // binary comment to mark as binary file
+  emit('%\xe2\xe3\xcf\xd3'); // four high bytes — flags file as binary
 
-  // Object 1: Catalog
-  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  // ── Object 1: Document Catalog ────────────────────────────────────────────
+  beginObj(1);
+  emit('<< /Type /Catalog /Pages 2 0 R >>');
+  endObj();
 
-  // Object 2: Pages (placeholder — updated below)
-  obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  // ── Object 2: Pages dictionary ────────────────────────────────────────────
+  beginObj(2);
+  emit('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  endObj();
 
-  // Object 3: Page
-  obj(3, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+  // ── Object 3: Page ────────────────────────────────────────────────────────
+  beginObj(3);
+  emit('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842]');
+  emit('   /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+  endObj();
 
-  // ── Build page content stream ─────────────────────────────────────────────
-  const lines: string[] = [];
+  // ── Build content stream ──────────────────────────────────────────────────
+  type TItem = { x: number; y: number; size: number; text: string };
+  const items: TItem[] = [];
 
-  const section = (title: string) => {
-    lines.push(`BT /F1 13 Tf ${title.length > 0 ? '50 ' + String(lines.length > 0 ? '0' : '0') + ' Td' : ''} ET`);
+  const PAGE_W  = 595;
+  const PAGE_H  = 842;
+  const ML      = 50;               // margin left
+  const TOP     = PAGE_H - 50;      // starting y
+  let   cy      = TOP;
+
+  const addItem = (text: string, x: number, size: number) => {
+    items.push({ x, y: cy, size, text });
+    cy -= size + 4;
   };
-  void section; // suppress unused warning — we build text directly below
+  const gap  = (n = 6) => { cy -= n; };
+  const head = (label: string) => { gap(); addItem(`-- ${label} --`, ML, 11); cy -= 4; };
 
-  // PDF text content: each entry is [x, y, fontSize, text]
-  type TextItem = { x: number; y: number; size: number; text: string };
-  const textItems: TextItem[] = [];
+  // Title block
+  addItem('AI Proctoring System - Exam Report', ML, 18);
+  addItem(`Generated: ${generatedAt}`, ML, 9);
+  addItem(`Session ID: ${pdfStr(sessionId)}`, ML, 9);
 
-  // Escape PDF string: backslash, parens
-  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]/g, '?');
+  // Student
+  head('Student Information');
+  addItem(`Name:   ${studentName}`,  ML + 10, 10);
+  addItem(`Email:  ${studentEmail}`, ML + 10, 10);
 
-  // Layout constants
-  const PAGE_H = 842;
-  const MARGIN_L = 50;
-  const MARGIN_TOP = PAGE_H - 50;
-  let y = MARGIN_TOP;
+  // Exam
+  head('Exam Information');
+  addItem(`Exam:   ${examTitle}`, ML + 10, 10);
 
-  const addText = (text: string, x: number, size: number, bold = false) => {
-    void bold;
-    textItems.push({ x, y, size, text: esc(text) });
-    y -= size + 4;
-  };
+  // Risk
+  head('Risk Assessment');
+  addItem(`Risk Score:       ${riskScore} / 100`,          ML + 10, 10);
+  addItem(`Risk Level:       ${riskLevel}`,                ML + 10, 10);
+  addItem(`Warnings:         ${warnings}`,                 ML + 10, 10);
+  addItem(`Total Violations: ${totalViolations}`,          ML + 10, 10);
+  addItem(`Status:           ${status}`,                   ML + 10, 10);
+  addItem(`Disqualified:     ${disqualified ? 'YES' : 'NO'}`, ML + 10, 10);
 
-  const addLine = () => { y -= 6; };
-  const addSection = (title: string) => {
-    addLine();
-    textItems.push({ x: MARGIN_L, y, size: 12, text: esc('── ' + title + ' ──') });
-    y -= 16;
-  };
-
-  // ── Page content ──────────────────────────────────────────────────────────
-  // Title
-  textItems.push({ x: MARGIN_L, y, size: 18, text: 'AI Proctoring System — Exam Report' }); y -= 26;
-  textItems.push({ x: MARGIN_L, y, size: 9,  text: esc(`Generated: ${generatedAt}`) });      y -= 14;
-  textItems.push({ x: MARGIN_L, y, size: 9,  text: esc(`Session ID: ${sessionId}`) });        y -= 20;
-
-  addSection('Student Information');
-  addText(`Name:   ${studentName}`,  MARGIN_L, 10);
-  addText(`Email:  ${studentEmail}`, MARGIN_L, 10);
-
-  addSection('Exam Information');
-  addText(`Exam:   ${examTitle}`, MARGIN_L, 10);
-
-  addSection('Risk Assessment');
-  addText(`Risk Score:  ${riskScore} / 100`,              MARGIN_L, 10);
-  addText(`Risk Level:  ${riskLevel}`,                    MARGIN_L, 10);
-  addText(`Warnings:    ${warnings}`,                     MARGIN_L, 10);
-  addText(`Total Violations: ${totalViolations}`,         MARGIN_L, 10);
-  addText(`Status:      ${status.toUpperCase()}`,         MARGIN_L, 10);
-  addText(`Disqualified: ${disqualified ? 'YES' : 'NO'}`, MARGIN_L, 10);
-
+  // Violations
   if (violationLines.length > 0) {
-    addSection('Violation Breakdown');
-    for (const vl of violationLines) addText(vl, MARGIN_L + 10, 9);
+    head('Violation Breakdown');
+    for (const vl of violationLines) { if (cy > 60) addItem(vl, ML + 10, 9); }
   }
 
+  // Timeline
   if (timelineLines.length > 0) {
-    addSection('Event Timeline (first 30)');
-    for (const tl of timelineLines) {
-      if (y < 60) break; // don't overflow a single page
-      addText(tl, MARGIN_L + 10, 8);
-    }
+    head('Event Timeline');
+    for (const tl of timelineLines) { if (cy > 60) addItem(tl, ML + 10, 8); }
   }
 
-  // Build stream from textItems
-  const streamParts: string[] = ['q'];
-  // Header bar
-  streamParts.push('0.12 0.16 0.25 rg');
-  streamParts.push(`${MARGIN_L - 5} ${MARGIN_TOP - 38} ${595 - MARGIN_L * 2 + 10} 44 re f`);
-  streamParts.push('Q');
-  // Draw text
-  for (const item of textItems) {
-    const isHeader = item.size >= 18;
-    const r = isHeader ? 1 : (item.size >= 12 ? 0.6 : 0.13);
-    const g = isHeader ? 1 : (item.size >= 12 ? 0.75 : 0.16);
-    const b = isHeader ? 1 : (item.size >= 12 ? 0.9  : 0.25);
-    streamParts.push(`BT`);
-    streamParts.push(`/F1 ${item.size} Tf`);
-    streamParts.push(`${r} ${g} ${b} rg`);
-    streamParts.push(`${item.x} ${item.y} Td`);
-    streamParts.push(`(${item.text}) Tj`);
-    streamParts.push(`ET`);
+  // Build the PDF graphics/text operators
+  const ops: string[] = [];
+
+  // Header background rectangle
+  ops.push(`0.12 0.16 0.25 rg`);
+  ops.push(`${ML - 5} ${TOP - 34} ${PAGE_W - ML * 2 + 10} 42 re f`);
+
+  for (const it of items) {
+    const isTitle = it.size >= 18;
+    // colour: white for title, medium-grey for section heads, dark for body
+    const [r, g, b] = isTitle ? [1, 1, 1]
+                    : it.size >= 11 ? [0.6, 0.75, 0.9]
+                    : [0.1, 0.1, 0.1];
+    ops.push(`BT /F1 ${it.size} Tf ${r} ${g} ${b} rg ${it.x} ${it.y} Td (${it.text}) Tj ET`);
   }
-  const stream = streamParts.join('\n');
 
-  // Object 4: Content stream
-  obj(4, `<< /Length ${Buffer.byteLength(stream, 'utf8')} >>\nstream\n${stream}\nendstream`);
+  // The stream body must be emitted exactly as the PDF /Length says.
+  // emit() always appends '\n', so we measure streamContent + '\n' to match.
+  const streamBody    = ops.join('\n') + '\n';
+  const streamLen     = Buffer.byteLength(streamBody, 'latin1');
 
-  // Object 5: Font
-  obj(5, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  // ── Object 4: Content stream ──────────────────────────────────────────────
+  beginObj(4);
+  emit(`<< /Length ${streamLen} >>`);
+  // "stream" keyword must be followed by exactly one newline before the data
+  // (PDF spec §7.3.8.1).  emit() adds that newline for us.
+  emit('stream');
+  // Append stream body directly (it already ends with '\n') and update pos.
+  parts.push(streamBody);
+  pos += streamLen;
+  emit('endstream');
+  endObj();
 
-  // xref table
-  const xrefOffset = byteOffset;
-  const xrefLines = ['xref', `0 ${offsets.length + 1}`, '0000000000 65535 f '];
-  for (let i = 1; i < offsets.length + 1; i++) {
-    xrefLines.push(String(offsets[i] ?? 0).padStart(10, '0') + ' 00000 n ');
+  // ── Object 5: Font ────────────────────────────────────────────────────────
+  beginObj(5);
+  emit('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica');
+  emit('   /Encoding /WinAnsiEncoding >>');
+  endObj();
+
+  // ── Cross-reference table ─────────────────────────────────────────────────
+  const xrefPos = pos;
+  const objCount = Math.max(...Object.keys(objOffsets).map(Number)) + 1; // highest obj id + 1
+
+  emit('xref');
+  emit(`0 ${objCount}`);
+  emit('0000000000 65535 f ');   // free-list head (object 0)
+  for (let i = 1; i < objCount; i++) {
+    emit(`${String(objOffsets[i] ?? 0).padStart(10, '0')} 00000 n `);
   }
-  xrefLines.push('trailer');
-  xrefLines.push(`<< /Size ${offsets.length + 1} /Root 1 0 R >>`);
-  xrefLines.push('startxref');
-  xrefLines.push(String(xrefOffset));
-  xrefLines.push('%%EOF');
 
-  const fullPdf = [...pdfLines, ...xrefLines].join('\n');
-  const pdfBuffer = Buffer.from(fullPdf, 'utf8');
+  // ── Trailer ───────────────────────────────────────────────────────────────
+  emit('trailer');
+  emit(`<< /Size ${objCount} /Root 1 0 R >>`);
+  emit('startxref');
+  emit(String(xrefPos));
+  emit('%%EOF');
 
-  const safeName = `report_${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+  // ── Assemble and send ─────────────────────────────────────────────────────
+  const pdfBuffer = Buffer.from(parts.join(''), 'latin1');
+  const safeName  = `report_${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
-  res.setHeader('Content-Length', pdfBuffer.length);
   res.setHeader('Cache-Control', 'no-store');
-  res.status(200).end(pdfBuffer);
+  // Use Vercel's res.send() — it correctly serialises a Buffer, sets
+  // Content-Length, and flushes the response in both dev and production.
+  res.status(200).send(pdfBuffer);
 });
 
 // ── GET /api/admin/disqualifications ──────────────────────────────────────────

@@ -12,6 +12,9 @@ export const ExamsPage: React.FC = () => {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ title: '', description: '', duration_minutes: 60 });
+  // Confirmation dialog state
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; title: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -57,14 +60,26 @@ export const ExamsPage: React.FC = () => {
     }
   };
 
-  const deleteExam = async (id: string) => {
-    if (!confirm('Delete this exam?')) return;
+  // Opens the confirmation dialog — does NOT delete yet.
+  const requestDelete = (id: string, title: string) => {
+    setConfirmDelete({ id, title });
+  };
+
+  // Called when admin confirms deletion in the dialog.
+  const confirmDeleteExam = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    const { id, title } = confirmDelete;
     try {
       await api.delete(`/api/exams/${id}`);
-      toast.success('Exam deleted');
-      load();
+      // Immediately remove from local state — no full reload needed.
+      setExams(prev => prev.filter(e => (e.id || e._id) !== id));
+      toast.success(`"${title}" deleted successfully`);
+      setConfirmDelete(null);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Failed to delete exam');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -142,6 +157,7 @@ export const ExamsPage: React.FC = () => {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
+                      {/* View / manage */}
                       <button
                         onClick={() => navigate(`/admin/exams/${exam._id}`)}
                         className="p-1.5 text-slate-400 hover:text-blue-400 rounded"
@@ -149,23 +165,25 @@ export const ExamsPage: React.FC = () => {
                       >
                         <Eye className="w-4 h-4" />
                       </button>
+
+                      {/* Publish — only for drafts */}
                       {exam.status === 'draft' && (
-                        <>
-                          <button
-                            onClick={() => publishExam(exam._id)}
-                            className="px-2 py-1 text-xs bg-green-900/40 text-green-400 border border-green-700/40 rounded hover:bg-green-900/60"
-                          >
-                            Publish
-                          </button>
-                          <button
-                            onClick={() => deleteExam(exam.id || exam._id)}
-                            className="p-1.5 text-slate-400 hover:text-red-400 rounded"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </>
+                        <button
+                          onClick={() => publishExam(exam._id)}
+                          className="px-2 py-1 text-xs bg-green-900/40 text-green-400 border border-green-700/40 rounded hover:bg-green-900/60"
+                        >
+                          Publish
+                        </button>
                       )}
+
+                      {/* Delete — available for ALL exams */}
+                      <button
+                        onClick={() => requestDelete(exam.id || exam._id, exam.title)}
+                        className="p-1.5 text-slate-400 hover:text-red-400 rounded"
+                        title="Delete exam"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -173,59 +191,115 @@ export const ExamsPage: React.FC = () => {
             </tbody>
           </table>
         </div>
+      </div>
 
-        {/* Create modal */}
-        {showCreate && (
-          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
-            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 w-full max-w-md">
-              <h2 className="text-slate-100 font-semibold text-lg mb-4">Create Examination</h2>
-              <div className="space-y-3">
+      {/* ── Create exam modal ─────────────────────────────────────────────────── */}
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-card border border-dark-border rounded-2xl p-6 w-full max-w-md">
+            <h2 className="text-slate-100 font-semibold text-lg mb-4">Create Examination</h2>
+            <div className="space-y-3">
+              <input
+                className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                placeholder="Exam title *"
+                value={form.title}
+                onChange={e => setForm({ ...form, title: e.target.value })}
+                autoFocus
+              />
+              <textarea
+                className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                placeholder="Description (optional)"
+                rows={3}
+                value={form.description}
+                onChange={e => setForm({ ...form, description: e.target.value })}
+              />
+              <div>
+                <label className="text-slate-400 text-sm">Duration (minutes)</label>
                 <input
-                  className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="Exam title *"
-                  value={form.title}
-                  onChange={e => setForm({ ...form, title: e.target.value })}
-                  autoFocus
+                  type="number"
+                  className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500 mt-1"
+                  value={form.duration_minutes}
+                  onChange={e => setForm({ ...form, duration_minutes: Number(e.target.value) })}
+                  min={5}
+                  max={300}
                 />
-                <textarea
-                  className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                  placeholder="Description (optional)"
-                  rows={3}
-                  value={form.description}
-                  onChange={e => setForm({ ...form, description: e.target.value })}
-                />
-                <div>
-                  <label className="text-slate-400 text-sm">Duration (minutes)</label>
-                  <input
-                    type="number"
-                    className="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500 mt-1"
-                    value={form.duration_minutes}
-                    onChange={e => setForm({ ...form, duration_minutes: Number(e.target.value) })}
-                    min={5}
-                    max={300}
-                  />
-                </div>
-              </div>
-              <div className="flex gap-3 mt-5">
-                <button
-                  onClick={() => { setShowCreate(false); setForm({ title: '', description: '', duration_minutes: 60 }); }}
-                  className="flex-1 py-2 bg-dark-bg border border-dark-border text-slate-300 rounded-lg"
-                  disabled={creating}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={createExam}
-                  disabled={creating}
-                  className="flex-1 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-60 text-white rounded-lg font-medium"
-                >
-                  {creating ? 'Creating…' : 'Create'}
-                </button>
               </div>
             </div>
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setShowCreate(false); setForm({ title: '', description: '', duration_minutes: 60 }); }}
+                className="flex-1 py-2 bg-dark-bg border border-dark-border text-slate-300 rounded-lg"
+                disabled={creating}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createExam}
+                disabled={creating}
+                className="flex-1 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-60 text-white rounded-lg font-medium"
+              >
+                {creating ? 'Creating…' : 'Create'}
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* ── Delete confirmation modal ─────────────────────────────────────────── */}
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-card border border-dark-border rounded-2xl p-6 w-full max-w-md">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-950/60 border border-red-800/60 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-red-400" />
+              </div>
+              <div>
+                <h2 className="text-slate-100 font-semibold text-lg">Delete Examination</h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Are you sure you want to delete{' '}
+                  <span className="text-slate-200 font-medium">"{confirmDelete.title}"</span>?
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg bg-red-950/30 border border-red-800/40 px-4 py-3 text-sm text-red-400 mb-5">
+              <strong>This action cannot be undone.</strong> All questions, student attempts,
+              proctoring sessions, violations, and reports associated with this exam will be
+              permanently deleted.
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="flex-1 py-2 bg-dark-bg border border-dark-border text-slate-300 rounded-lg text-sm hover:bg-slate-800 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteExam}
+                disabled={deleting}
+                className="flex-1 flex items-center justify-center gap-2 py-2 bg-red-700 hover:bg-red-600 disabled:opacity-60 text-white rounded-lg text-sm font-medium"
+              >
+                {deleting ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Deleting…
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    Delete Permanently
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 };
